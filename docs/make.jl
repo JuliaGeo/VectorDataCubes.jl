@@ -11,7 +11,7 @@ example_scripts = sort(filter(f -> endswith(f, ".jl"), readdir(EXAMPLES_DIR)))
 mkpath(GENERATED_DIR)
 example_pages = map(example_scripts) do script
     src = joinpath(EXAMPLES_DIR, script)
-    Literate.markdown(src, GENERATED_DIR; documenter = true)
+    Literate.markdown(src, GENERATED_DIR)
     joinpath("examples", splitext(script)[1] * ".md")
 end
 

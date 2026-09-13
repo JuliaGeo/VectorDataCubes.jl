@@ -1,87 +1,163 @@
-# Zonal statistics that return vector data cubes. `VectorDataCubes.zonal` is a
-# package-owned function (not a method of `Rasters.zonal`, which can't dispatch
-# on its `of` keyword): geometry-lookup `of`s are handled here, everything else
-# forwards to `Rasters.zonal`.
+# `VectorDataCubes.zonal` is package-owned, not a method of `Rasters.zonal`,
+# which cannot dispatch on its `of` keyword: geometry-lookup `of`s are handled
+# here, everything else forwards to `Rasters.zonal`.
 
 """
-    VectorDataCubes.zonal(f, x; of, kw...)
+    VectorDataCubes.zonal(f, x; of, spatialslices = true, kw...)
 
-Calculate zonal statistics like `Rasters.zonal`, but return a vector data cube
-when `of` is a [`GeometryLookup`](@ref) or a dimension wrapping one: a `Raster`
-over a `Geometry` dimension carrying the lookup, so the result can be indexed
-with spatial selectors like `Geometry(Contains(point))`. Any other `of` is
-forwarded to `Rasters.zonal` unchanged.
+Zonal statistics as a vector data cube. Like `Rasters.zonal`, `f` reduces the
+cells of `x` covered by each geometry; unlike it, when `of` carries a
+[`GeometryLookup`](@ref) the result is a `Raster` (or a `RasterStack`, one
+layer per layer of `x`) over a geometry dimension holding that lookup, so it
+accepts spatial selectors such as `Geometry(Contains(point))`.
 
-If `x` has more dimensions than the lookup spans (e.g. `Ti` or `Band` on top
-of `X` and `Y`), `f` is applied to each spatial slice (conceptually
-`mapslices(f, masked; dims = (X, Y))`) and the result is a cube over the
-leftover dimensions plus `Geometry`. The `spatialslices` keyword controls
-this: `true` (the default) slices over the lookup's spatial dims, `false`
-applies `f` to the whole masked raster per geometry, and a tuple of dims
-slices over those dims instead.
+# Arguments
 
-All other keywords (`skipmissing`, `emptyval`, `progress`, `threaded`, ...)
-are passed through to Rasters' zonal machinery, which does all the cropping,
-masking, and missing-value handling.
+- `f`: a function reducing an iterable to one value, such as `sum` or `Statistics.mean`.
+- `x`: a `Raster` or `RasterStack` with the lookup's dimensions (`X` and `Y` by default).
 
-This function is deliberately not exported, since Rasters exports `zonal` too;
-call it qualified, or bind it explicitly with `using VectorDataCubes: zonal`.
+# Keywords
+
+- `of`: the geometries, in one of these forms:
+  - a `GeometryLookup`, giving a result over `Geometry`;
+  - a dimension wrapping one (`Geometry(lookup)`, `Dim{:Origin}(lookup)`), whose name
+    the result keeps;
+  - a `DimArray`, `DimStack`, `Raster` or `RasterStack` with exactly one such dimension,
+    or a tuple of dimensions containing one;
+  - anything else, forwarded to `Rasters.zonal` unchanged.
+- `spatialslices`: the dimensions `f` reduces over when `x` has more dimensions than
+  the lookup spans (`Ti` or `Band` on top of `X` and `Y`, say):
+  - `true` (the default): the lookup's dimensions, so `f` sees one spatial slice at a
+    time (like `mapslices(f, masked; dims = (X, Y))`) and the result is a cube over the
+    remaining dimensions plus the geometry dimension;
+  - `false`: every dimension, so `f` sees the whole masked raster per geometry and the
+    result is a vector over the geometry dimension;
+  - a tuple of dimensions containing the lookup's, such as `(X, Y, Ti)`: those
+    dimensions, with the result over the rest. The lookup's dimensions can never be left
+    out: each geometry's crop has its own spatial size, so per-geometry results cannot
+    be stacked along them.
+- `emptyval`: the value for a geometry covering no non-missing cell under `skipmissing`,
+  per slice when slicing and per geometry otherwise. Without it, `f` is called on an
+  empty iterator.
+- `skipmissing`, `progress`, `threaded`, `boundary`, `shape`: as in `Rasters.zonal`.
+
+A geometry entirely outside `x` gives `missing` (a `missing`-filled slice when
+slicing). The result keeps the name and metadata of `x`. When `x` and the lookup
+both carry a CRS of the same kind and they differ, a warning is emitted; nothing
+is reprojected.
+
+Unexported, since Rasters exports a `zonal` too: call it qualified, or bind it
+with `using VectorDataCubes: zonal`.
 """
 zonal(f, x; of, kw...) = _zonal(f, x, of; kw...)
 
-# Any `of` without a geometry lookup is Rasters' business.
 _zonal(f, x, of; kw...) = RA.zonal(f, x; of, kw...)
-_zonal(f, x, of::DD.Dimension{<:GeometryLookup}; kw...) = _zonal(f, x, val(of); kw...)
+_zonal(f, x, lookup::GeometryLookup; kw...) = _zonal(f, x, Geometry(lookup); kw...)
+_zonal(f, x, of::Union{DD.AbstractDimArray,DD.AbstractDimStack,DD.DimTuple}; kw...) =
+    _zonal(f, x, _geometrydim(of), of; kw...)
+_zonal(f, x, ::Nothing, of; kw...) = RA.zonal(f, x; of, kw...)
+_zonal(f, x, geomdim::DD.Dimension, of; kw...) = _zonal(f, x, geomdim; kw...)
+
+function _zonal(f, x::Union{RA.AbstractRaster,RA.AbstractRasterStack},
+    geomdim::DD.Dimension{<:GeometryLookup}; kw...
+)
+    lookup = val(geomdim)
+    isempty(parent(lookup)) &&
+        throw(ArgumentError("Cannot compute zonal statistics with an empty `GeometryLookup`."))
+    _warn_crs_mismatch(x, lookup)
+    return _zonal_geometries(f, x, geomdim; kw...)
+end
+
 # Stacks fan out by layer, so layers with different dimensions each produce
 # a cube of the right shape.
-function _zonal(f, st::RA.AbstractRasterStack, lookup::GeometryLookup; kw...)
+function _zonal_geometries(f, st::RA.AbstractRasterStack, geomdim; kw...)
     K = keys(st)
     layers = map(K) do k
-        _zonal(f, st[k], lookup; kw...)
+        _zonal_geometries(f, st[k], geomdim; kw...)
     end
-    return RA.RasterStack(NamedTuple{K}(layers))
+    return RA.RasterStack(NamedTuple{K}(layers); metadata=DD.metadata(st))
 end
-function _zonal(f, x::RA.AbstractRaster, lookup::GeometryLookup;
+function _zonal_geometries(f, x::RA.AbstractRaster, geomdim;
     spatialslices=true, skipmissing=true, emptyval=nokw, progress=true, threaded=true, kw...
 )
-    geoms = lookup.data
-    isempty(geoms) && throw(ArgumentError("Cannot compute zonal statistics with an empty `GeometryLookup`."))
-    # The same `open`/`_prepare_for_burning` preamble as `Rasters.zonal`.
+    lookup = val(geomdim)
+    geoms = parent(lookup)
+    slicedims = _zonal_slicedims(spatialslices, x, _lookupdims(x, lookup))
     return Base.open(x) do o
         xp = RA._prepare_for_burning(o)
-        slicedims = _zonal_slicedims(spatialslices, xp, lookup)
         zs = if isnothing(slicedims)
             RA._zonal(f, xp, nothing, geoms; skipmissing, emptyval, progress, threaded, kw...)
         else
-            # When slicing, `emptyval` is applied per slice inside the wrapper
-            # rather than by Rasters per geometry, where it would produce a
-            # scalar instead of a slice-shaped result. The per-geometry loop is
-            # also run here rather than through Rasters' allocation path, which
-            # types its result vector from the first geometry and so cannot hold
-            # slice results whose eltype differs between geometries (e.g. an
-            # all-`emptyval` result for a geometry smaller than a grid cell).
-            inner = _SpatialSliceify(f, slicedims, emptyval)
-            _zonal_eachgeom(inner, xp, geoms; skipmissing, progress, threaded, kw...)
+            # When slicing, `emptyval` applies per slice inside the wrapper, so an
+            # all-empty geometry still yields a slice-shaped result, and the
+            # per-geometry loop collects into an untyped vector, because slice
+            # results can differ in eltype between geometries (an all-`emptyval`
+            # slice for a geometry smaller than a grid cell, say). Rasters' own
+            # loop types its result vector from the first geometry.
+            inner = _SpatialSliceify(f, DD.dims(xp, slicedims), emptyval)
+            desc = "Applying $f to each geometry..."
+            _zonal_eachgeom(inner, xp, geoms, desc; skipmissing, progress, threaded, kw...)
         end
         otherdims = isnothing(slicedims) ? () : DD.otherdims(xp, slicedims)
-        _geometry_cube(xp, zs, Geometry(lookup), otherdims)
+        _geometry_cube(xp, zs, geomdim, otherdims)
     end
 end
+
+# The single dimension of `x` backed by a `GeometryLookup`, or `nothing`.
+function _geometrydim(x)
+    geomdims = filter(d -> val(d) isa GeometryLookup, DD.dims(x))
+    length(geomdims) <= 1 || throw(ArgumentError(
+        "`of` has $(length(geomdims)) dimensions backed by a `GeometryLookup` " *
+        "($(join(map(DD.name, geomdims), ", "))); pass the one to use, e.g. `of = dims(of, Geometry)`."
+    ))
+    return isempty(geomdims) ? nothing : only(geomdims)
+end
+
+# The dimensions of `x` the lookup spans, in the lookup's order.
+function _lookupdims(x, lookup)
+    xydims = DD.dims(x, DD.dims(lookup))
+    length(xydims) == 2 || throw(ArgumentError(
+        "The `GeometryLookup` spans dimensions $(map(DD.name, DD.dims(lookup))) " *
+        "but `x` has dimensions $(map(DD.name, DD.dims(x))); both of the lookup's dimensions must be present in `x`."
+    ))
+    return xydims
+end
+
+function _warn_crs_mismatch(x, lookup)
+    xcrs, lcrs = RA.crs(x), GI.crs(lookup)
+    (isnothing(xcrs) || isnothing(lcrs)) && return nothing
+    DD.basetypeof(xcrs) === DD.basetypeof(lcrs) || return nothing
+    xcrs == lcrs && return nothing
+    @warn "`x` has crs $(xcrs) but the `GeometryLookup` has crs $(lcrs); values are computed as if both were the same. Reproject one of them first."
+    return nothing
+end
+
+_zonal_slicedims(spatialslices::Bool, x, xydims) = spatialslices ? xydims : nothing
+function _zonal_slicedims(spatialslices::Tuple, x, xydims)
+    slicedims = DD.dims(x, spatialslices)
+    length(slicedims) == length(spatialslices) || throw(ArgumentError(
+        "`spatialslices = $spatialslices` names dimensions `x` does not have; `x` has $(map(DD.name, DD.dims(x)))."
+    ))
+    length(DD.dims(slicedims, xydims)) == 2 || throw(ArgumentError(
+        "`spatialslices = $spatialslices` must contain the lookup's dimensions $(map(DD.name, xydims)): " *
+        "each geometry's crop has its own spatial size, so per-geometry results cannot be stacked along them."
+    ))
+    return slicedims
+end
+_zonal_slicedims(spatialslices, x, xydims) = throw(ArgumentError(
+    "`spatialslices` must be `true`, `false` or a tuple of dimensions containing the lookup's; got `$spatialslices`."
+))
 
 # Like Rasters' `_zonal(f, x, ::Nothing, geoms)`, reusing its per-geometry
 # crop/mask path and `_run` threading/progress, but collecting into an
 # untyped vector that is narrowed afterwards.
-function _zonal_eachgeom(f, x, geoms; skipmissing, progress, threaded, kw...)
+function _zonal_eachgeom(f, x, geoms, desc; skipmissing, progress, threaded, kw...)
     zs = Vector{Any}(undef, length(geoms))
-    RA._run(eachindex(zs), threaded, progress, "Applying $f to each geometry...") do i
+    RA._run(eachindex(zs), threaded, progress, desc) do i
         zs[i] = RA._zonal(f, x, geoms[i]; skipmissing, emptyval=nokw, kw...)
     end
     return map(identity, zs)
 end
-
-_zonal_slicedims(spatialslices::Bool, x, lookup) =
-    spatialslices ? DD.dims(x, DD.dims(lookup)) : nothing
-_zonal_slicedims(spatialslices, x, lookup) = DD.dims(x, spatialslices)
 
 # `_SpatialSliceify` wraps `f` to reduce each spatial slice instead of the
 # whole masked raster, returning a `Raster` over the remaining dims. Rasters
@@ -96,6 +172,8 @@ end
 (s::_SpatialSliceify)(x::DD.AbstractDimArray) =
     _mapspatialslices(_empty_aware(s.f, s.emptyval), x, s.dims)
 (s::_SpatialSliceify)(sm::Base.SkipMissing) =
+    _mapspatialslices(_empty_aware(s.f, s.emptyval) ∘ Base.skipmissing, sm.x, s.dims)
+(s::_SpatialSliceify)(sm::RA.SkipMissingVal) =
     _mapspatialslices(_empty_aware(s.f, s.emptyval) ∘ Base.skipmissing, sm.x, s.dims)
 
 # If `emptyval` was passed, return it for empty (e.g. fully-masked) slices
@@ -114,17 +192,22 @@ end
 
 # Assemble the per-geometry results (scalars, `Raster`s when slicing, or
 # `missing` for geometries entirely outside the raster) into a vector data
-# cube along a `Geometry` dimension carrying the lookup.
-function _geometry_cube(x::RA.AbstractRaster, zs::AbstractVector, geomdim::Geometry, otherdims::Tuple)
+# cube along `geomdim`, keeping the name and metadata of `x`.
+function _geometry_cube(x::RA.AbstractRaster, zs::AbstractVector, geomdim::DD.Dimension, otherdims::Tuple)
+    name, metadata = DD.name(x), DD.metadata(x)
+    if isempty(zs)
+        data = Array{eltype(x)}(undef, length.(otherdims)..., 0)
+        return RA.Raster(data, (otherdims..., geomdim); name, metadata)
+    end
     i = findfirst(z -> z isa DD.AbstractDimArray, zs)
     if isnothing(i)
-        # Scalar results: a vector over Geometry only...
-        isempty(otherdims) && return RA.Raster(zs, (geomdim,); name=DD.name(x))
+        # Scalar results: a vector over the geometry dimension only...
+        isempty(otherdims) && return RA.Raster(zs, (geomdim,); name, metadata)
         # ...unless slicing over `otherdims` was requested and every geometry
         # was outside the raster - then keep the cube shape, so the output
         # dimensionality doesn't depend on data coverage.
         data = Base.stack(map(z -> fill(z, length.(otherdims)), zs))
-        return RA.Raster(data, (otherdims..., geomdim); name=DD.name(x))
+        return RA.Raster(data, (otherdims..., geomdim); name, metadata)
     end
     # Geometries entirely outside the raster came back as `missing` and are
     # expanded to missing-filled slices.
@@ -133,5 +216,5 @@ function _geometry_cube(x::RA.AbstractRaster, zs::AbstractVector, geomdim::Geome
         z isa DD.AbstractDimArray ? parent(z) : fill(z, size(template))
     end
     data = Base.stack(arrays)
-    return RA.Raster(data, (DD.dims(template)..., geomdim); name=DD.name(x))
+    return RA.Raster(data, (DD.dims(template)..., geomdim); name, metadata)
 end

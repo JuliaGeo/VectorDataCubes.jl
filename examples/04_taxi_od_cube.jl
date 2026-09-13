@@ -18,7 +18,6 @@ Data (both from the NYC Taxi & Limousine Commission's open data, no auth):
 using VectorDataCubes
 using Rasters, DimensionalData
 using Rasters.Lookups
-import DimensionalData as DD
 import GeometryOps as GO, GeoInterface as GI
 import GeoDataFrames, Parquet2, ZipFile
 import Tables
@@ -120,12 +119,15 @@ tsq_to_jfk == from_tsq[only(Lookups.selectindices(val(Destination), Contains(jfk
 #=
 ## To a table
 
-`DimTable` works on any dim combination, so the origin-destination cube
-flattens to one row per zone pair, with real polygons in both geometry
-columns. (`vectordatacubetable` currently expects a single `Geometry`
-dimension, so use `DimTable` directly for multi-geometry cubes.)
+[`vectordatacubetable`](@ref) flattens the origin-destination cube to one row
+per zone pair, with real polygons in both geometry columns: every dimension
+backed by a `GeometryLookup` becomes a geometry column, and the table records
+them — and the shared crs — as metadata for `GeoInterface`, `DataFrame` and
+`GeoDataFrames.write` to find.
 =#
 
-tbl = DD.DimTable(od)
-# The columns are the two geometry dimensions plus the value layer:
-Tables.columnnames(tbl)
+tbl = vectordatacubetable(od)
+
+# The columns are the two geometry dimensions plus the value layer, and both
+# dimensions are geometry columns:
+GI.geometrycolumns(tbl), GI.crs(tbl)

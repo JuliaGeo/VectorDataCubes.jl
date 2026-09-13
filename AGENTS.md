@@ -9,11 +9,25 @@ stack whose `Geometry` dimension is backed by a `GeometryLookup` (a geometry vec
 STRtree). The payoff is spatial indexing — `cube[Geometry(Contains(point))]`,
 `cube[X(a..b), Y(c..d)]` — on top of everything DimensionalData/Rasters already gives you.
 
-Three entry points, one per `src/` file:
+Three entry points, one per `src/` file (plus the selectors split out of the core):
 
-- `geometry_lookup.jl` — the `Geometry` dimension and `GeometryLookup` (the spatial-indexing core).
+- `geometry_lookup.jl` — the `Geometry` dimension and `GeometryLookup` (the spatial-indexing core:
+  struct, constructor, lazily built tree via `spatialtree`, DD interface, crs, `reproject` stub).
+- `selectors.jl` — every `Lookups.selectindices` method for a `GeometryLookup`.
 - `zonal.jl` — `VectorDataCubes.zonal`, aggregating a raster over geometries into a cube.
-- `tables.jl` — `vectordatacube` / `vectordatacubetable`, round-tripping a table ↔ cube.
+- `extract.jl` — `VectorDataCubes.extract`, sampling a raster at points into a cube.
+- `tables.jl` — `vectordatacube` / `vectordatacubetable`, round-tripping a table ↔ cube;
+  `VectorDataCubeTable` (the returned table) carries geometry columns and crs as DataAPI metadata.
+
+Plus two package extensions. `ext/VectorDataCubesProjExt.jl` (loaded with Proj) supplies
+`Rasters.reproject` for a `GeometryLookup`; without it the stub throws an `ArgumentError`
+asking for `import Proj`. `ext/VectorDataCubesMakieExt.jl` (loaded with Makie)
+makes a `GeometryLookup`, and any dimension wrapping one, plottable by converting its
+geometries to GeometryBasics and forwarding to Makie's `poly`/`lines`/`scatter` recipes.
+Its `convert_arguments`/`plottype` methods name the lookup type, which is more specific
+than the `AbstractArray{<:SomeGeometry}` methods the geometry packages install through
+`GeoInterface.@enable_makie`, so one conversion covers every element type. Nothing there
+touches `DimArray`s — DimensionalData's own Makie extension owns those.
 
 ## Commands
 
@@ -41,15 +55,30 @@ avoids re-paying Julia's per-process compile latency on every run.
 
 ## Architecture
 
-- **`Lookups.selectindices` (in `geometry_lookup.jl`) is the heart.** Every spatial
-  selector resolves to indices there: narrow with an STRtree extent query, then refine
-  with an exact GeometryOps predicate. A new selector means a new method here.
+- **`Lookups.selectindices` (in `selectors.jl`) is the heart.** Every spatial
+  selector resolves to indices there: narrow with an STRtree extent query
+  (`_maybe_get_candidates`), then refine with an exact GeometryOps predicate
+  (`_select_predicate`). A new selector means a new method here. Supported today:
+  `Contains(point)` (closed, `GO.covers`), `At(geom)`, `Near(point)` (branch-and-bound
+  over the tree, ties to the lowest index so a lookup with a tree and one without answer
+  the same), `Touches(extent)` (`GO.intersects`), `Where(f)` with tree-narrowed fast
+  paths for every curried `GO.pred(g)`, the DE9IM.jl predicates (`DE9IM.Covers(g)`, …;
+  never re-exported, their names clash with DD's selectors), and on the internal `X`/`Y`
+  dims the pairs `At`/`At`, `Contains`/`Contains`, `Near`/`Near`, interval/interval
+  (covered by the box) and `Touches`/`Touches` (intersecting the box), matched to
+  coordinates by dimension type. `VectorDataCubes.mask(lookup_or_cube, sel)` turns any of
+  them into a `Bool` mask.
 - **The lookup spans `(X(), Y())` *and* the `Geometry` dim wrapping it** — that's why both
-  `Geometry(...)` and `X()/Y()` selectors work on one axis. `DD.rebuild` rebuilds the
-  STRtree when the data changes.
-- **`zonal` is package-owned, not a `Rasters.zonal` method** (Rasters can't dispatch on
-  `of`), and not exported (call it qualified). A `GeometryLookup` `of` yields a cube;
-  anything else forwards to `Rasters.zonal`.
+  `Geometry(...)` and `X()/Y()` selectors work on one axis.
+- **The tree is lazy.** `spatialtree(lookup)` builds it on the first spatial query and
+  caches it; slicing, `view`, `reverse` and `DD.rebuild` with new data hand back an
+  unbuilt index, so the array type never depends on the number of geometries. Nothing
+  outside `geometry_lookup.jl` touches `lookup.tree` or `lookup.data`.
+- **`zonal` and `extract` are package-owned, not methods of the Rasters ones** (Rasters
+  can't dispatch on `zonal`'s `of`, and its `extract` returns rows), and not exported
+  (call them qualified). A `GeometryLookup` `of` yields a cube; anything else forwards to
+  `Rasters.zonal`. Both assemble their result with `_geometry_cube`, which keeps the name
+  and metadata of `x` and gives a cube over `(otherdims..., geometry dim)`.
 
 ## Conventions
 

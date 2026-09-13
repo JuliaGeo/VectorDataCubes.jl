@@ -32,7 +32,9 @@ isfile(airfile) || download(
 )
 
 air = RasterStack(airfile)[:air]
-air = set(air, X => val(dims(air, X)) .- 360)
+# Longitudes run 0..360; shift them to -180..180 as a range, so the lookup keeps its regular cell size.
+lons = val(dims(air, X))
+air = set(air, X => range(first(lons) - 360, last(lons) - 360; length=length(lons)))
 air = air .- 273.15
 
 #=
@@ -50,20 +52,20 @@ println(nrow(cities), " cities in coverage: ", join(cities.name, ", "))
 #=
 ## Sampling -> vector data cube
 
-We sample the nearest grid cell for each city, then assemble the series into
-a cube whose geometry dimension is a `GeometryLookup` over the city *points*.
-(The lookup works for any geometry type, not just polygons.)
+`VectorDataCubes.extract` samples the grid cell containing each city and
+arranges the series as a cube over `(Ti, Geometry)`, whose geometry dimension
+is a `GeometryLookup` over the city *points*. (The lookup works for any
+geometry type, not just polygons.) The `cities` DataFrame goes in directly:
+its geometry column is picked up from the table, and the CRS is passed since
+the file carries none.
+
+The NetCDF coordinates are cell centres (`Points` sampling), which would only
+match a city sitting exactly on a centre; declaring them as `Intervals` makes
+each cell own the points around its centre.
 =#
 
-series = map(cities.geometry) do pt
-    air[X=Near(GI.x(pt)), Y=Near(GI.y(pt))]
-end
-citygl = GeometryLookup(GO.get_geometries(cities.geometry); crs=EPSG(4326))
-citycube = Raster(
-    reduce(hcat, parent.(series)),
-    (dims(air, Ti), Geometry(citygl));
-    name=:air,
-)
+air = set(air, X => Intervals(Center()), Y => Intervals(Center()))
+citycube = VectorDataCubes.extract(air, cities; crs=EPSG(4326))
 size(citycube) == (length(dims(air, Ti)), nrow(cities))
 
 #=

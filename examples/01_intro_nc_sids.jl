@@ -19,9 +19,8 @@ its GitHub repository (~150 kB).
 using VectorDataCubes
 using Rasters, DimensionalData
 using Rasters.Lookups
-import DimensionalData as DD
 import GeometryOps as GO, GeoInterface as GI
-import GeoDataFrames, Shapefile
+import GeoDataFrames
 using DataFrames
 using Downloads: download
 
@@ -46,7 +45,6 @@ spatial selectors on the cube are fast, and it carries the CRS (the data is in
 NAD27, EPSG:4267).
 =#
 
-geoms = GO.get_geometries(counties)
 gl = GeometryLookup(counties)
 # You could also write `gl = GeometryLookup(GO.get_geometries(counties); crs=GI.crs(counties))` if you want to do this manually.
 
@@ -93,11 +91,17 @@ worst_rate, worst_idx = findmax(rate[Year=At(1974)])
 #=
 ## To a table
 
-You can call any Tables.jl compatible constructor, in this case `DataFrame`, on the cube to get a table.
+[`vectordatacubetable`](@ref) flattens the cube to a table with one row per
+county × year, the county polygons in a `Geometry` column, and the crs carried
+as table metadata. Any Tables.jl constructor accepts it, and `DataFrame` keeps
+the metadata, so the geometry column and the crs travel with the data:
 =#
 
-tbl = DataFrame(rate)
+tbl = DataFrame(vectordatacubetable(rate))
+GI.crs(tbl)
 # We can sort the table by the value, and get the top 5 counties by rate:
 first(sort(tbl, :rate; rev=true), 5)
-# and write it to a shapefile:
-GeoDataFrames.write(GeoDataFrames.ArchGDALDriver(), datadir("nc_rates.shp"), tbl; geometrycolumn = :Geometry)
+# and write it to a shapefile — `GeoDataFrames.write` finds the geometry column
+# and the crs in the table's metadata, so the `.prj` records NAD27:
+GeoDataFrames.write(datadir("nc_rates.shp"), tbl)
+GI.crs(GeoDataFrames.read(datadir("nc_rates.shp")))

@@ -25,6 +25,7 @@ using VectorDataCubes: zonal
 import DimensionalData as DD
 import GeometryOps as GO, GeoInterface as GI
 import NCDatasets # activates Rasters' NetCDF backend
+import Proj # activates reprojection of geometry lookups
 using NaturalEarth
 using DataFrames
 using Statistics: mean
