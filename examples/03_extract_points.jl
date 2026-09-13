@@ -1,12 +1,9 @@
 #=
 # Point extraction: city temperature time series
 
-This is a port of xvec's "Extracting points from a geospatial raster" tutorial
-(https://xvec.readthedocs.io/en/stable/extract_pts.html), and of the
-station × time cube archetype from the R `stars` / "Spatial Data Science" NO₂
-example: sample a raster time series at point geometries and arrange the
-result as a vector data cube over `(Ti, Geometry)`, where the geometry
-dimension holds the points.
+A port of xvec's "Extracting points" tutorial (https://xvec.readthedocs.io/en/stable/extract_pts.html)
+and of the station × time cube of the R `stars` / "Spatial Data Science" NO₂ example: sample
+a raster time series at point geometries into a `(Ti, Geometry)` cube over those points.
 
 Data is the same NCEP air temperature NetCDF as in `02_zonal_countries.jl`,
 sampled at Natural Earth populated places (1:110m).
@@ -52,12 +49,12 @@ println(nrow(cities), " cities in coverage: ", join(cities.name, ", "))
 #=
 ## Sampling -> vector data cube
 
-`VectorDataCubes.extract` samples the grid cell containing each city and
-arranges the series as a cube over `(Ti, Geometry)`, whose geometry dimension
-is a `GeometryLookup` over the city *points*. (The lookup works for any
-geometry type, not just polygons.) The `cities` DataFrame goes in directly:
-its geometry column is picked up from the table, and the CRS is passed since
-the file carries none.
+`VectorDataCubes.extract` samples the grid cell containing each city and arranges the series
+as a cube over `(Ti, Geometry)`, whose geometry dimension is a `GeometryLookup` over the city
+*points* — the lookup works for any geometry type, not just polygons.
+
+The `cities` DataFrame goes in directly: its geometry column is read from the table, and the
+CRS is passed since the file carries none.
 
 The NetCDF coordinates are cell centres (`Points` sampling), which would only
 match a city sitting exactly on a centre; declaring them as `Intervals` makes

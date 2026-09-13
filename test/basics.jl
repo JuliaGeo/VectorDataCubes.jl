@@ -31,21 +31,6 @@ end
         @test only(ras[Geometry = (X(At(-103)), Y(At(44)))]) == ras[findfirst(==("USA"), country_fc.ADM0_A3)]
     end
 
-    # @testset "indexing with geometry" begin
-    #     for fname in (:intersects, 
-    #         :contains, :within, :covers, 
-    #         :coveredby, :touches, :disjoint)
-    #         @testset "Fix2 with GeometryOps $fname" begin
-    #             @test isempty(setdiff(
-    #                 Rasters.DD.dims2indices(ras, getproperty(GO, fname)(gl[1])),
-    #                 filter(axes(gl, 1)) do idx
-    #                     getproperty(GO, fname)(gl[idx], gl[1])
-    #                 end
-    #             ))
-    #         end
-    #     end
-        # @test ras[Geometry=Where(GO.contains(gl[1]))] == ras[Geometry=1]
-        # @test ras[Geometry=Where(GO.equals(gl[1]))] == ras[Geometry=1]
-        @test ras[Geometry=Where(GO.disjoint(gl[1]))] == ras[Geometry=2:DD.End()]
-    # end
+    # Every `Where(GO.pred(g))` form is covered in test/selectors.jl.
+    @test ras[Geometry=Where(GO.disjoint(gl[1]))] == ras[Geometry=2:DD.End()]
 end

@@ -2,10 +2,9 @@ import DE9IM
 
 const STI = GO.SpatialTreeInterface
 
-# Every selector on a `GeometryLookup` resolves here: narrow the candidates with an
-# extent query on `spatialtree(lookup)` (all indices when there is no tree), then
-# refine with an exact GeometryOps predicate. Multi-index results are `Vector{Int}`,
-# single-match selectors (`At`, `Near`, the `(At, At)` pair) return an `Int`.
+# Every selector on a `GeometryLookup` resolves here: narrow candidates with an extent query
+# on `spatialtree(lookup)` (all indices without a tree), then refine with an exact GeometryOps
+# predicate. Multi-index results are `Vector{Int}`; `At`, `Near` and `(At, At)` return an `Int`.
 
 Lookups.selectindices(lookup::GeometryLookup, sel::Lookups.StandardIndices) = sel
 
@@ -22,10 +21,9 @@ _val_or_nothing(d::DD.Dimension) = val(d)
 """
     Lookups.selectindices(lookup::GeometryLookup, (xsel, ysel)::Tuple)
 
-Select geometries by a pair of selectors on the internal `X` and `Y` dimensions,
-written on a cube as `cube[X(xsel), Y(ysel)]` or `cube[Geometry = (X(xsel), Y(ysel))]`.
-Each selector is matched to a coordinate by its dimension type, so the pair works the
-same on a lookup with `dims = (Y(), X())`.
+Select geometries by a pair of selectors on the internal `X` and `Y` dimensions, written on
+a cube as `cube[X(xsel), Y(ysel)]` or `cube[Geometry = (X(xsel), Y(ysel))]`. Each selector is
+matched to a coordinate by dimension type, so the pair also works with `dims = (Y(), X())`.
 
 - `(At(x), At(y))`: the geometry covering the point, the lowest matching index as an
   `Int`; none is an `ArgumentError`.
@@ -46,10 +44,9 @@ function _xy(lookup::GeometryLookup, sel::Tuple)
     first(DD.dims(lookup)) isa DD.XDim ? (sel[1], sel[2]) : (sel[2], sel[1])
 end
 _pair_error(sel) = throw(ArgumentError("""
-    Unsupported selector pair `$sel` on a `GeometryLookup`. The supported pairs are
-    `(X(At(x)), Y(At(y)))`, `(X(Contains(x)), Y(Contains(y)))`, `(X(Near(x)), Y(Near(y)))`,
-    `(X(a .. b), Y(c .. d))` and `(X(Touches(a, b)), Y(Touches(c, d)))`; an interval or
-    `Touches` may also be given on one axis alone.
+    Unsupported selector pair `$sel` on a `GeometryLookup`. Supported: `(X(At(x)), Y(At(y)))`,
+    `(X(Contains(x)), Y(Contains(y)))`, `(X(Near(x)), Y(Near(y)))`, `(X(a .. b), Y(c .. d))`,
+    `(X(Touches(a, b)), Y(Touches(c, d)))`, and an interval or `Touches` on one axis alone.
     """))
 
 const _PairInterval = Union{DD.IntervalSets.Interval,Nothing}
@@ -125,11 +122,12 @@ end
 """
     Lookups.selectindices(lookup::GeometryLookup, sel::Near)
 
-The index of the geometry nearest (`GeometryOps.distance`) to the point `Near` wraps;
-geometries containing the point are at distance zero, and ties go to the lowest index.
-The search is a branch-and-bound over [`spatialtree`](@ref), or a linear scan when
-the lookup has no tree. Only points are supported; an empty lookup is an
-`ArgumentError`. A vector of points gives a `Vector{Int}`, one index per point.
+The index of the geometry nearest (`GeometryOps.distance`) to the point `Near` wraps; a
+geometry containing the point is at distance zero, and ties go to the lowest index. A vector
+of points gives a `Vector{Int}`, one index per point.
+
+The search is a branch-and-bound over [`spatialtree`](@ref), or a linear scan without a tree.
+Only points are accepted, and an empty lookup is an `ArgumentError`.
 """
 Lookups.selectindices(lookup::GeometryLookup, sel::Lookups.Near) = _nearest(lookup, _checked_point(sel))
 Lookups.selectindices(lookup::GeometryLookup, sel::Union{Lookups.At{<:AbstractVector},Lookups.Near{<:AbstractVector}}) =
@@ -138,16 +136,13 @@ Lookups.selectindices(lookup::GeometryLookup, sel::Union{Lookups.At{<:AbstractVe
 """
     Lookups.selectindices(lookup::GeometryLookup, sel::Touches{<:Extents.Extent})
 
-The indices of the geometries intersecting (`GeometryOps.intersects`) the
-`Extents.Extent` `Touches` wraps, as a `Vector{Int}`:
-`cube[Geometry = Touches(GI.extent(geom))]`. This is the loose "touches" of
-DimensionalData's `Touches`; the strict DE-9IM relation (boundaries meet, interiors do
-not) is `DE9IM.Touches(geom)`.
+The indices of the geometries intersecting (`GeometryOps.intersects`) the extent `Touches`
+wraps, as a `Vector{Int}`: `cube[Geometry = Touches(GI.extent(geom))]`. This is the loose
+"touches" of DimensionalData; the strict DE-9IM relation is `DE9IM.Touches(geom)`.
 
-`Touches` accepts an extent or a pair of bounds only — DimensionalData's type
-constrains its value — so intersection with a geometry is `Where(GO.intersects(geom))`
-or `DE9IM.Intersects(geom)`, and the bounds form is per axis:
-`cube[X(Touches(a, b)), Y(Touches(c, d))]`.
+DimensionalData's `Touches` type constrains its value to an extent or a pair of bounds, so
+intersection with a geometry is `Where(GO.intersects(geom))` or `DE9IM.Intersects(geom)`, and
+the bounds form is per axis: `cube[X(Touches(a, b)), Y(Touches(c, d))]`.
 """
 Lookups.selectindices(lookup::GeometryLookup, sel::Lookups.Touches{<:Extents.Extent}) =
     _select_predicate(lookup, GO.intersects, val(sel))
@@ -161,10 +156,9 @@ Lookups.selectindices(lookup::GeometryLookup, sel::Lookups.Touches) = throw(Argu
 
 The indices `i` for which `f(geometry_i)` holds, as a `Vector{Int}`.
 
-A curried GeometryOps predicate — `Where(GO.intersects(geom))`, and likewise
-`equals`, `contains`, `within`, `covers`, `coveredby`, `touches`, `crosses`,
-`overlaps`, `disjoint` — is narrowed with the spatial tree first; any other function
-is a linear `findall`.
+A curried GeometryOps predicate — `Where(GO.intersects(geom))`, and likewise `equals`,
+`contains`, `within`, `covers`, `coveredby`, `touches`, `crosses`, `overlaps`, `disjoint` — is
+narrowed with the spatial tree first; any other function is a linear `findall`.
 """
 Lookups.selectindices(lookup::GeometryLookup, sel::Lookups.Where) = findall(val(sel), parent(lookup))
 
@@ -177,13 +171,12 @@ end
 """
     Lookups.selectindices(lookup::GeometryLookup, sel::DE9IM.DE9IMPredicate)
 
-The indices of the geometries `A` for which `pred(A, geom)` holds, for a DE-9IM
-predicate `pred(geom)` from DE9IM.jl: `Intersects`, `Disjoint`, `Contains`, `Within`,
-`Covers`, `CoveredBy`, `Touches`, `Crosses`, `Overlaps`, `Equals`. The wrapped geometry
-is the second argument, as in `cube[Geometry = DE9IM.Covers(geom)]`.
+The indices of the geometries `A` for which `pred(A, geom)` holds, `pred(geom)` being a DE9IM.jl
+predicate (`Intersects`, `Disjoint`, `Contains`, `Within`, `Covers`, `CoveredBy`, `Touches`,
+`Crosses`, `Overlaps`, `Equals`) with the wrapped geometry as its second argument.
 
-A vector of geometries selects the sorted union of the matches for each. Keyword
-arguments on the predicate are not supported.
+Written as `cube[Geometry = DE9IM.Covers(geom)]`; a vector of geometries selects the sorted
+union of the matches for each. Keyword arguments on the predicate are not supported.
 """
 function Lookups.selectindices(lookup::GeometryLookup, sel::DE9IM.DE9IMPredicate)
     geom = _checked_geometry(sel)
@@ -318,10 +311,9 @@ function _wrapsgeometry(sel::DE9IM.DE9IMPredicate)
     return geom isa AbstractVector ? all(_isgeometry, geom) : _isgeometry(geom)
 end
 
-# Nearest geometry to a point: branch and bound over the spatial tree, visiting children
-# in order of point-to-extent distance and pruning subtrees that cannot beat the best
-# exact distance so far. Subtrees at exactly that distance are still visited, so ties
-# resolve to the lowest index, as in the linear scan.
+# Nearest geometry to a point: branch and bound over the tree, visiting children by
+# point-to-extent distance and pruning subtrees that cannot beat the best exact distance.
+# Nodes at exactly that distance are still visited: ties go to the lowest index, like the scan.
 
 function _nearest(lookup::GeometryLookup, point)
     geoms = parent(lookup)
@@ -364,10 +356,9 @@ end
     mask(lookup::GeometryLookup, sel) -> Vector{Bool}
     mask(A::Union{AbstractDimArray,AbstractDimStack}, sel) -> DimArray{Bool}
 
-A boolean mask over the geometries of a lookup: `true` where the selector `sel`
-selects. `sel` is any selector `Lookups.selectindices` accepts on a
-[`GeometryLookup`](@ref) — `Contains`, `At`, `Near`, `Touches`, `Where`, a DE9IM
-predicate or a tuple of `X`/`Y` selectors.
+A boolean mask over the geometries of a lookup: `true` where `sel` selects. `sel` is any
+selector `Lookups.selectindices` accepts on a [`GeometryLookup`](@ref): `Contains`, `At`,
+`Near`, `Touches`, `Where`, a DE9IM predicate or a tuple of `X`/`Y` selectors.
 
 On a cube, the mask is a `DimArray` over the dimension carrying the `GeometryLookup`;
 a cube with no such dimension, or more than one, is an `ArgumentError` (pass the

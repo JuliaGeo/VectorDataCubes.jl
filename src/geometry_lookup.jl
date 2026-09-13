@@ -26,10 +26,9 @@ function _xyextent(geometry)
     return Extents.Extent(X=Float64.(ext.X), Y=Float64.(ext.Y))
 end
 
-# The lazily built spatial accelerator of a `GeometryLookup`. `spatialtree` builds the
-# tree on its first call and caches it here; slicing or rebuilding a lookup with new
-# geometries starts from a fresh, unbuilt index with the same algorithm. The slot is
-# atomic because the build is double-checked: readers take no lock once a tree is there.
+# The lazily built spatial accelerator of a `GeometryLookup`. `spatialtree` builds and caches
+# the tree on first use; a rebuild with new geometries gets a fresh index, same algorithm. The
+# slot is atomic so readers take no lock once a tree is there (the build is double-checked).
 mutable struct SpatialIndex{A<:BulkLoadAlgorithm,Tr<:RTree}
     const algorithm::A
     @atomic tree::Union{Nothing,Tr}
@@ -51,16 +50,13 @@ _buildtree(algorithm::BulkLoadAlgorithm, geometries::AbstractVector) =
 
 A DimensionalData `Lookup` over geometries, with spatial indexing.
 
-`GeometryLookup` is the lookup of the [`Geometry`](@ref) dimension of a
-vector data cube. It holds a vector of geometries and a lazily built spatial
-tree, so selectors such as `Contains(point)`, `Touches(extent)`,
-`Where(GO.intersects(geom))` and the DE9IM.jl predicates resolve to indices with
-a tree query followed by an exact `GeometryOps` predicate.
+The lookup of the [`Geometry`](@ref) dimension of a vector data cube: a vector of geometries
+plus a lazily built spatial tree. Selectors — `Contains(point)`, `Touches(extent)`,
+`Where(GO.intersects(geom))`, DE9IM.jl predicates — narrow by the tree, then test exactly.
 
-The lookup spans the two internal dimensions in `dims` as well as the
-dimension it is wrapped in, so on a cube built as
-`DimArray(values, Geometry(GeometryLookup(geoms)))` both
-`cube[Geometry = Contains(point)]` and `cube[X(a..b), Y(c..d)]` work.
+The lookup spans its internal `dims` as well as the dimension wrapping it, so on
+`DimArray(values, Geometry(GeometryLookup(geoms)))` both `cube[Geometry = Contains(point)]`
+and `cube[X(a..b), Y(c..d)]` work.
 
 # Arguments
 

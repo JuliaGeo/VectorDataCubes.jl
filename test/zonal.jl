@@ -108,11 +108,9 @@ zgl = GeometryLookup([zoneA, zoneB, zoneC])
     end
 
     @testset "emptyval with a masked-out and an off-raster geometry" begin
-        # zoneE's bounding box holds the cell center (0.5, 0.5) but the
-        # triangle itself does not: crop is non-empty but the mask removes
-        # every cell, so each slice is empty -> emptyval. zoneC crops to
-        # nothing -> missing. Slice results then differ in eltype between
-        # geometries, which must not break assembling the cube.
+        # zoneE's bounding box holds the cell center (0.5, 0.5) but the triangle does not:
+        # the crop is non-empty yet the mask removes every cell, so each slice -> emptyval.
+        # zoneC crops to nothing -> missing. Eltypes then differ between geometries.
         zoneE = GI.Polygon([GI.LinearRing([(0.0, 0.0), (0.9, 0.0), (0.0, 0.9), (0.0, 0.0)])])
         gl = GeometryLookup([zoneA, zoneE, zoneC])
         res = zonal(mean, ras3d; of=gl, emptyval=-1.0, progress=false)

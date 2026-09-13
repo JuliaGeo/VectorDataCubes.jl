@@ -12,12 +12,9 @@ const Plottable = Union{GeometryLookup,GeometryDim}
 _geometries(l::GeometryLookup) = parent(l)
 _geometries(d::GeometryDim) = parent(DD.lookup(d))
 
-# A `GeometryLookup` is an `AbstractVector` of geometries, so the Makie methods every
-# geometry package installs for its own type (`GeoInterface.@enable_makie` on
-# `AbstractArray{<:WrapperGeometry}`, and Shapefile's, GeoJSON's, ArchGDAL's and
-# LibGEOS's equivalents) match a lookup of those geometries as well. Naming the lookup
-# type is more specific than any `AbstractArray{<:SomeGeometry}`, so these three methods
-# convert every lookup the same way, whatever its element type.
+# Every geometry package installs Makie methods on its own `AbstractArray{<:Geometry}`
+# (`GeoInterface.@enable_makie`, and Shapefile's, GeoJSON's, ArchGDAL's, LibGEOS's), which a
+# lookup of those geometries also matches; naming the lookup type is more specific, so it wins.
 Makie.convert_arguments(t::Type{<:Makie.Poly}, x::Plottable) =
     Makie.convert_arguments(t, _geometrybasics(x))
 # `Lines` needs a method of its own because those packages define

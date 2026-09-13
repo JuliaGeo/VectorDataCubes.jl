@@ -1,18 +1,16 @@
-# `VectorDataCubes.extract` is package-owned like `zonal`: Rasters' `extract`
-# returns rows, cannot dispatch on a lookup of points, and handles only two
-# spatial dimensions (`Rasters.Extractor` takes exactly two `Order`s, so an
-# `(X, Y, Ti)` raster is a `MethodError` in Rasters 0.15). Cells are found here
-# with Rasters' own point-burning selectors, so sampling matches it.
+# `VectorDataCubes.extract` is package-owned like `zonal`: Rasters' `extract` returns rows,
+# cannot dispatch on a lookup of points, and takes exactly two spatial dimensions (an
+# `(X, Y, Ti)` raster is a `MethodError` in Rasters 0.15). Cells come from Rasters' selectors.
 
 """
     VectorDataCubes.extract(x, points; geometrycolumn = nothing, crs = nokw, skipmissing = false, atol = nothing)
 
-Point sampling as a vector data cube: the value of the cell of `x` containing
-each point, as a `Raster` (or a `RasterStack`, one layer per layer of `x`)
-over the non-spatial dimensions of `x` plus a geometry dimension holding a
-[`GeometryLookup`](@ref) of the points. It is the point counterpart of
-[`zonal`](@ref VectorDataCubes.zonal): a 2-D `x` gives a vector over the
-points, an `(X, Y, Ti)` one a `(Ti, Geometry)` cube.
+Point sampling as a vector data cube: the value of the cell of `x` containing each point, as a
+`Raster` (or a `RasterStack`, one layer per layer of `x`) over the non-spatial dimensions of
+`x` plus a geometry dimension holding a [`GeometryLookup`](@ref) of the points.
+
+The point counterpart of [`zonal`](@ref VectorDataCubes.zonal): a 2-D `x` gives a vector over
+the points, an `(X, Y, Ti)` one a `(Ti, Geometry)` cube.
 
 # Arguments
 
@@ -22,8 +20,7 @@ points, an `(X, Y, Ti)` one a `(Ti, Geometry)` cube.
   - a table or feature collection with a point geometry column;
   - a `GeometryLookup` of points, giving a result over `Geometry`;
   - a dimension wrapping one (`Dim{:Station}(lookup)`), whose name the result keeps.
-  Geometries other than points are an error; [`zonal`](@ref VectorDataCubes.zonal)
-  aggregates over those.
+  Non-point geometries are an error; [`zonal`](@ref VectorDataCubes.zonal) handles those.
 
 # Keywords
 
@@ -31,13 +28,10 @@ points, an `(X, Y, Ti)` one a `(Ti, Geometry)` cube.
   the table declares.
 - `crs`: the CRS of the points. When not given, it is taken from the lookup, the table
   or the geometries, in that order.
-- `skipmissing`: `false` (the default) keeps every point, with `missing` for points
-  outside `x`; `true` drops points outside `x`, or whose cell holds only missing
-  values, from the result and from its lookup. For a `RasterStack` a point is dropped
-  when any layer is missing at its cell.
-- `atol`: the tolerance for matching a point to a cell centre when the spatial lookups
-  of `x` are `Points`. For `Intervals`, the cell whose interval contains the point is
-  used and `atol` is ignored.
+- `skipmissing`: `true` drops points outside `x` or in an all-missing cell (any layer, for a
+  stack) from the result and its lookup; `false` (the default) keeps them as `missing`.
+- `atol`: the tolerance for matching a point to a cell centre on `Points` lookups; `Intervals`
+  lookups use the cell containing the point and ignore it.
 
 The result keeps the name and metadata of `x`. When `x` and the points both
 carry a CRS of the same kind and they differ, a warning is emitted; nothing is

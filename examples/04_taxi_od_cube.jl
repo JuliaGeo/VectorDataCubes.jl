@@ -1,11 +1,9 @@
 #=
 # Two geometry dimensions: NYC taxi origin × destination cube
 
-This is a port of xvec's "Indexing" tutorial
-(https://xvec.readthedocs.io/en/stable/indexing.html): arrange NYC yellow-taxi
-trip counts as a cube whose *two* dimensions are both indexed by taxi-zone
-polygons — origins and destinations — and then slice it with spatial selectors
-on either axis.
+A port of xvec's "Indexing" tutorial (https://xvec.readthedocs.io/en/stable/indexing.html):
+arrange NYC yellow-taxi trip counts as a cube whose *two* dimensions are both indexed by
+taxi-zone polygons (origins and destinations), then slice it spatially on either axis.
 
 Nothing in `GeometryLookup` is tied to the `Geometry` dimension: any dimension
 can carry one, so a cube can have several geometry-indexed axes at once.
@@ -46,10 +44,9 @@ isfile(tripfile) || download(
 #=
 ## The geometry dimensions
 
-The taxi zones ship in EPSG:2263 (NY Long Island, US feet); we reproject them
-to lon/lat once so the spatial selectors below can be written in familiar
-coordinates. Origins and destinations share the same zones, so the two
-lookups are built from the same geometry vector.
+The taxi zones ship in EPSG:2263 (NY Long Island, US feet); we reproject them to lon/lat once
+so the spatial selectors below can use familiar coordinates. Origins and destinations share
+the same zones, so both lookups are built from the same geometry vector.
 =#
 
 zones = GeoDataFrames.read(zonefile)
@@ -119,11 +116,9 @@ tsq_to_jfk == from_tsq[only(Lookups.selectindices(val(Destination), Contains(jfk
 #=
 ## To a table
 
-[`vectordatacubetable`](@ref) flattens the origin-destination cube to one row
-per zone pair, with real polygons in both geometry columns: every dimension
-backed by a `GeometryLookup` becomes a geometry column, and the table records
-them — and the shared crs — as metadata for `GeoInterface`, `DataFrame` and
-`GeoDataFrames.write` to find.
+[`vectordatacubetable`](@ref) flattens the origin-destination cube to one row per zone pair
+with real polygons in both geometry columns: every `GeometryLookup`-backed dimension becomes
+one, recorded with the shared crs as table metadata that `GeoInterface` and `DataFrame` read.
 =#
 
 tbl = vectordatacubetable(od)

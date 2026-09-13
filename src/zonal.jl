@@ -5,11 +5,9 @@
 """
     VectorDataCubes.zonal(f, x; of, spatialslices = true, kw...)
 
-Zonal statistics as a vector data cube. Like `Rasters.zonal`, `f` reduces the
-cells of `x` covered by each geometry; unlike it, when `of` carries a
-[`GeometryLookup`](@ref) the result is a `Raster` (or a `RasterStack`, one
-layer per layer of `x`) over a geometry dimension holding that lookup, so it
-accepts spatial selectors such as `Geometry(Contains(point))`.
+Zonal statistics as a vector data cube. Like `Rasters.zonal`, `f` reduces the cells of `x`
+covered by each geometry; with a [`GeometryLookup`](@ref) `of`, the result is a `Raster` (or
+a `RasterStack`, one layer per layer of `x`) over that lookup, ready for spatial selectors.
 
 # Arguments
 
@@ -27,24 +25,19 @@ accepts spatial selectors such as `Geometry(Contains(point))`.
   - anything else, forwarded to `Rasters.zonal` unchanged.
 - `spatialslices`: the dimensions `f` reduces over when `x` has more dimensions than
   the lookup spans (`Ti` or `Band` on top of `X` and `Y`, say):
-  - `true` (the default): the lookup's dimensions, so `f` sees one spatial slice at a
-    time (like `mapslices(f, masked; dims = (X, Y))`) and the result is a cube over the
-    remaining dimensions plus the geometry dimension;
+  - `true` (the default): the lookup's dimensions, so `f` sees one spatial slice at a time
+    (`mapslices(f, masked; dims = (X, Y))`) and the result spans the other dimensions too;
   - `false`: every dimension, so `f` sees the whole masked raster per geometry and the
     result is a vector over the geometry dimension;
-  - a tuple of dimensions containing the lookup's, such as `(X, Y, Ti)`: those
-    dimensions, with the result over the rest. The lookup's dimensions can never be left
-    out: each geometry's crop has its own spatial size, so per-geometry results cannot
-    be stacked along them.
-- `emptyval`: the value for a geometry covering no non-missing cell under `skipmissing`,
-  per slice when slicing and per geometry otherwise. Without it, `f` is called on an
-  empty iterator.
+  - a tuple of dimensions containing the lookup's, such as `(X, Y, Ti)`: those, with the result
+    over the rest. The lookup's dimensions are required: each crop has its own spatial size.
+- `emptyval`: the value for a geometry (or slice, when slicing) covering no non-missing cell
+  under `skipmissing`; without it, `f` is called on an empty iterator.
 - `skipmissing`, `progress`, `threaded`, `boundary`, `shape`: as in `Rasters.zonal`.
 
-A geometry entirely outside `x` gives `missing` (a `missing`-filled slice when
-slicing). The result keeps the name and metadata of `x`. When `x` and the lookup
-both carry a CRS of the same kind and they differ, a warning is emitted; nothing
-is reprojected.
+A geometry entirely outside `x` gives `missing` (a `missing`-filled slice when slicing). The
+result keeps the name and metadata of `x`. A CRS mismatch between `x` and the lookup (same
+CRS kind, different value) only warns; nothing is reprojected.
 
 Unexported, since Rasters exports a `zonal` too: call it qualified, or bind it
 with `using VectorDataCubes: zonal`.
@@ -88,12 +81,9 @@ function _zonal_geometries(f, x::RA.AbstractRaster, geomdim;
         zs = if isnothing(slicedims)
             RA._zonal(f, xp, nothing, geoms; skipmissing, emptyval, progress, threaded, kw...)
         else
-            # When slicing, `emptyval` applies per slice inside the wrapper, so an
-            # all-empty geometry still yields a slice-shaped result, and the
-            # per-geometry loop collects into an untyped vector, because slice
-            # results can differ in eltype between geometries (an all-`emptyval`
-            # slice for a geometry smaller than a grid cell, say). Rasters' own
-            # loop types its result vector from the first geometry.
+            # `emptyval` applies per slice in the wrapper, so an all-empty geometry still yields
+            # a slice-shaped result. Slice eltypes can differ between geometries (all-`emptyval`
+            # for a sub-cell one), so collect untyped; Rasters' loop types from the first.
             inner = _SpatialSliceify(f, DD.dims(xp, slicedims), emptyval)
             desc = "Applying $f to each geometry..."
             _zonal_eachgeom(inner, xp, geoms, desc; skipmissing, progress, threaded, kw...)
@@ -159,10 +149,9 @@ function _zonal_eachgeom(f, x, geoms, desc; skipmissing, progress, threaded, kw.
     return map(identity, zs)
 end
 
-# `_SpatialSliceify` wraps `f` to reduce each spatial slice instead of the
-# whole masked raster, returning a `Raster` over the remaining dims. Rasters
-# passes the wrapped function `skipmissing(masked)` when `skipmissing=true`;
-# that is unwrapped and `skipmissing` re-applied per slice.
+# Wraps `f` to reduce each spatial slice, returning a `Raster` over the remaining dims. With
+# `skipmissing=true` Rasters passes the wrapper `skipmissing(masked)`; that is unwrapped and
+# `skipmissing` re-applied per slice.
 struct _SpatialSliceify{F,D,E}
     f::F
     dims::D

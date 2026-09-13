@@ -1,9 +1,6 @@
-# Tables.jl integration in both directions: [`vectordatacube`](@ref) lifts a
-# flat table (or feature collection) into a `DimStack` over a `Geometry`
-# dimension, one layer per attribute column; [`vectordatacubetable`](@ref)
-# flattens a cube back to a table, one row per geometry × other-dim coordinate,
-# with real geometry objects in the geometry columns and the lookup's crs
-# carried as DataAPI table metadata.
+# Tables.jl integration in both directions: [`vectordatacube`](@ref) lifts a table into a
+# `DimStack` over `Geometry`, one layer per attribute column; [`vectordatacubetable`](@ref)
+# flattens a cube to one row per coordinate, with geometry columns and crs as table metadata.
 
 import Tables
 import DataAPI
@@ -11,16 +8,12 @@ import DataAPI
 """
     VectorDataCubeTable <: Tables.AbstractColumns
 
-The table [`vectordatacubetable`](@ref) returns: a column table wrapping the
-`DimensionalData.DimTable` of a vector data cube, which additionally carries
-the cube's geometry columns and crs as DataAPI.jl table metadata under
-GeoInterface's keys `"GEOINTERFACE:geometrycolumns"` and `"GEOINTERFACE:crs"`.
-Any consumer that reads that metadata — `GeoInterface.geometrycolumns`,
-`GeoInterface.crs`, `DataFrame`, `GeoDataFrames.write`, ... — therefore sees
-the geometry columns and the crs without being told about them.
+The table [`vectordatacubetable`](@ref) returns: a column table wrapping a vector data cube's
+`DimensionalData.DimTable`, carrying the geometry columns and crs as DataAPI.jl table metadata
+that `GeoInterface.crs`, `DataFrame`, `GeoDataFrames.write` and other metadata readers see.
 
-`parent(tbl)` is the wrapped `DimTable`; the Tables.jl columns interface
-forwards to it unchanged.
+The metadata keys are GeoInterface's `"GEOINTERFACE:geometrycolumns"` and `"GEOINTERFACE:crs"`.
+`parent(tbl)` is the wrapped `DimTable`; the Tables.jl columns interface forwards to it.
 """
 struct VectorDataCubeTable{T<:DD.DimTable,C} <: Tables.AbstractColumns
     table::T
@@ -84,10 +77,9 @@ end
 """
     vectordatacube(table; geometrycolumn=nothing, layers=nothing, crs=nokw)
 
-Convert a table with a geometry column (a GeoJSON `FeatureCollection`, a
-`Shapefile.Table`, a `DataFrame`, ...) to a vector data cube: a `DimStack`
-over a `Geometry` dimension carrying a [`GeometryLookup`](@ref) of the
-geometries, with one layer per remaining column.
+Convert a table with a geometry column (a GeoJSON `FeatureCollection`, a `Shapefile.Table`,
+a `DataFrame`, ...) to a vector data cube: a `DimStack` over a `Geometry` dimension carrying
+a [`GeometryLookup`](@ref) of the geometries, with one layer per remaining column.
 
 Because the attributes are layers over the same `Geometry` dimension,
 subsetting the cube (by index or spatial selector) keeps them aligned with the
@@ -95,11 +87,10 @@ geometries — there is no separate attribute table to keep in sync.
 
 # Keywords
 
-- `geometrycolumn`: the name of the geometry column, a `Symbol` or a `String`.
-  Defaults to the table's own metadata (`GeoInterface.geometrycolumns`), which
-  is `:geometry` for most formats and `:Geometry` for a
-  [`vectordatacubetable`](@ref); a table declaring several geometry columns
-  must name one here. Other geometry-typed columns are kept as ordinary layers.
+- `geometrycolumn`: the geometry column, a `Symbol` or a `String`; other geometry-typed
+  columns stay ordinary layers. Defaults to the table's `GeoInterface.geometrycolumns`:
+  - `:geometry` for most formats, `:Geometry` for a [`vectordatacubetable`](@ref);
+  - a table declaring several geometry columns must name one here.
 - `layers`: the column names to keep as layers — a `Symbol`, a `String`, or
   any iterable of them. Defaults to every column except the geometry column.
 - `crs`: the coordinate reference system of the geometries. Defaults to the
@@ -200,18 +191,17 @@ end
 """
     vectordatacubetable(cube)
 
-Convert a vector data cube (a `DimArray`/`Raster`/`DimStack`/`RasterStack` with
-at least one dimension whose lookup is a [`GeometryLookup`](@ref)) to a
-[`VectorDataCubeTable`](@ref): a column table with one row per
-combination of dimension coordinates — one column per dimension, holding the
-actual geometry objects for the geometry dimensions, and one value column per
-layer — that also carries the geometry column names and the crs as DataAPI
-table metadata, so `GeoInterface.geometrycolumns`, `GeoInterface.crs`,
-`DataFrame` and `GeoDataFrames.write` all see them.
+Convert a vector data cube (a `DimArray`/`Raster`/`DimStack`/`RasterStack` with at least one
+dimension backed by a [`GeometryLookup`](@ref)) to a [`VectorDataCubeTable`](@ref): a column
+table with one row per combination of dimension coordinates, and these columns:
 
-Every geometry dimension (`Geometry`, `Dim{:Origin}`, ...) becomes a geometry
-column named after the dimension; their lookups must agree on the crs
-(lookups without a crs are ignored), otherwise this is an `ArgumentError`.
+- one per dimension, named after it, holding the actual geometry objects for a geometry
+  dimension (`Geometry`, `Dim{:Origin}`, ...);
+- one value column per layer.
+
+The geometry column names and the crs travel as DataAPI table metadata, which
+`GeoInterface.geometrycolumns`, `GeoInterface.crs`, `DataFrame` and `GeoDataFrames.write` read.
+Geometry lookups carrying a crs must agree on it; disagreement is an `ArgumentError`.
 """
 function vectordatacubetable(cube::Union{DD.AbstractDimArray,DD.AbstractDimStack})
     geomdims = filter(d -> DD.lookup(d) isa GeometryLookup, (DD.dims(cube)..., DD.refdims(cube)...))
