@@ -5,8 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this package is
 
 VectorDataCubes.jl makes a **vector data cube**: a `DimensionalData`/`Rasters` array or
-stack whose `Geometry` dimension is backed by a `GeometryLookup` (a geometry vector + an
-STRtree). The payoff is spatial indexing — `cube[Geometry(Contains(point))]`,
+stack whose `Geometry` dimension is backed by a `GeometryLookup` (a geometry vector + a
+packed R-tree). The payoff is spatial indexing — `cube[Geometry(Contains(point))]`,
 `cube[X(a..b), Y(c..d)]` — on top of everything DimensionalData/Rasters already gives you.
 
 Three entry points, one per `src/` file (plus the selectors split out of the core):
@@ -56,7 +56,7 @@ avoids re-paying Julia's per-process compile latency on every run.
 ## Architecture
 
 - **`Lookups.selectindices` (in `selectors.jl`) is the heart.** Every spatial
-  selector resolves to indices there: narrow with an STRtree extent query
+  selector resolves to indices there: narrow with an R-tree extent query
   (`_maybe_get_candidates`), then refine with an exact GeometryOps predicate
   (`_select_predicate`). A new selector means a new method here. Supported today:
   `Contains(point)` (closed, `GO.covers`), `At(geom)`, `Near(point)` (branch-and-bound
@@ -73,7 +73,10 @@ avoids re-paying Julia's per-process compile latency on every run.
 - **The tree is lazy.** `spatialtree(lookup)` builds it on the first spatial query and
   caches it; slicing, `view`, `reverse` and `DD.rebuild` with new data hand back an
   unbuilt index, so the array type never depends on the number of geometries. Nothing
-  outside `geometry_lookup.jl` touches `lookup.tree` or `lookup.data`.
+  outside `geometry_lookup.jl` touches `lookup.tree` or `lookup.data`. It always indexes
+  `Float64` `X`/`Y` extents (`_xyextent`) with a `Vector{Int}` of leaf indices, so its
+  type — `XYRTree{algorithm, geometryvector}` — follows from the lookup's own type,
+  whatever the geometries' coordinate type or dimensionality.
 - **`zonal` and `extract` are package-owned, not methods of the Rasters ones** (Rasters
   can't dispatch on `zonal`'s `of`, and its `extract` returns rows), and not exported
   (call them qualified). A `GeometryLookup` `of` yields a cube; anything else forwards to
@@ -83,6 +86,6 @@ avoids re-paying Julia's per-process compile latency on every run.
 ## Conventions
 
 - **Import aliases**, consistent everywhere: `DD`, `GO`, `GOCore`, `GI`, `RA`, plus
-  `Extents`, `Missings`, `SortTileRecursiveTree`.
+  `Extents`, `Missings`.
 - **`nokw` / `isnokw`** (from Rasters) is the "keyword not supplied" sentinel, distinct
   from a meaningful `nothing` (e.g. no CRS / no tree).

@@ -6,6 +6,7 @@ using Rasters.Lookups
 import DimensionalData as DD
 import GeometryOps as GO, GeoInterface as GI
 import DE9IM
+using GeometryOps.FlexibleRTrees: STR, HPR, Unsorted
 using Extents
 using Random
 
@@ -28,7 +29,8 @@ selinds(gl, sel) = sort(Lookups.selectindices(gl, sel))
 inferred_selectindices(gl, sel) = @inferred Lookups.selectindices(gl, sel)
 
 @testset "selectors on hand-made squares (tree = $treedesc)" for (treedesc, treekw) in
-    (("STRtree", (;)), ("nothing", (; tree = nothing)))
+    (("default", (;)), ("HPR", (; tree = HPR())), ("Unsorted", (; tree = Unsorted())),
+     ("nothing", (; tree = nothing)))
 
     gl = GeometryLookup(squares; treekw...)
     dv = rand(Geometry(gl))
@@ -347,12 +349,39 @@ end
         s = 1.0 + 9.0 * rand(rng)
         _square(x, y, x + s, y + s)
     end
-    withtree = GeometryLookup(polys)
+    withtrees = [GeometryLookup(polys; tree = algorithm) for algorithm in (STR(), HPR(), Unsorted())]
     notree = GeometryLookup(polys; tree = nothing)
     for _ in 1:50
         p = (-5.0 + 45.0 * rand(rng), -5.0 + 45.0 * rand(rng))
         linear = argmin(i -> GO.distance(p, polys[i]), eachindex(polys))
         @test Lookups.selectindices(notree, Near(p)) == linear
-        @test Lookups.selectindices(withtree, Near(p)) == linear
+        @test all(gl -> Lookups.selectindices(gl, Near(p)) == linear, withtrees)
+    end
+end
+
+@testset "extent queries agree with the linear scan on a many-level tree" begin
+    rng = MersenneTwister(5678)
+    polys = map(1:500) do _
+        x, y = 30 .* rand(rng, 2)
+        s = 0.5 + 3.0 * rand(rng)
+        _square(x, y, x + s, y + s)
+    end
+    withtrees = [GeometryLookup(polys; tree = algorithm) for algorithm in (STR(), HPR(), Unsorted())]
+    notree = GeometryLookup(polys; tree = nothing)
+    for g in polys[1:10]
+        e = GI.extent(g)
+        sels = (Touches(e), Where(GO.intersects(g)), Where(GO.disjoint(g)), DE9IM.Covers(g),
+                (X(e.X[1] .. e.X[2]), Y(e.Y[1] .. e.Y[2])),
+                (X(Touches(e.X...)), Y(Touches(e.Y...))))
+        for sel in sels
+            linear = selinds(notree, sel)
+            @test all(gl -> selinds(gl, sel) == linear, withtrees)
+        end
+        at = Lookups.selectindices(notree, At(g))
+        @test all(gl -> Lookups.selectindices(gl, At(g)) == at, withtrees)
+    end
+    for p in ((5.0, 5.0), (0.0, 0.0), (29.9, 29.9), (-5.0, 15.0), (15.0, 15.0))
+        linear = selinds(notree, Contains(p))
+        @test all(gl -> selinds(gl, Contains(p)) == linear, withtrees)
     end
 end

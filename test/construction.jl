@@ -6,7 +6,7 @@ using Rasters, DimensionalData
 using Rasters.Lookups
 import DimensionalData as DD
 import GeometryOps as GO, GeoInterface as GI
-import SortTileRecursiveTree
+using GeometryOps.FlexibleRTrees: RTree, STR, HPR, Unsorted
 import Extents
 
 _csquare(x1, y1, x2, y2) =
@@ -24,7 +24,7 @@ _built(gl) = !isnothing(VectorDataCubes._builttree(gl))
     @testset "from a vector of geometries" begin
         gl = GeometryLookup(csquares)
         @test all(splat(GO.equals), zip(val(gl), csquares))
-        @test spatialtree(gl) isa SortTileRecursiveTree.STRtree
+        @test spatialtree(gl) isa RTree{STR}
         @test gl.manifold == GO.Planar()
     end
 
@@ -82,8 +82,23 @@ end
         gl = GeometryLookup(csquares)
         @test !_built(gl)
         tree = spatialtree(gl)
-        @test tree isa SortTileRecursiveTree.STRtree
+        @test tree isa RTree{STR}
+        @test tree.data === parent(gl)
         @test spatialtree(gl) === tree
+    end
+
+    @testset "the tree type is known from the lookup type" begin
+        gl = GeometryLookup(csquares)
+        @test only(Base.return_types(spatialtree, (typeof(gl),))) == Union{Nothing, typeof(spatialtree(gl))}
+        @test isconcretetype(typeof(spatialtree(gl)))
+        # a view keeps its own, still concrete, tree type
+        v = view(gl, 1:2)
+        @test only(Base.return_types(spatialtree, (typeof(v),))) == Union{Nothing, typeof(spatialtree(v))}
+        # so does a geometry vector whose eltype tells the compiler nothing
+        anygl = DD.rebuild(gl; data = Any[csquares...])
+        @test only(Base.return_types(spatialtree, (typeof(anygl),))) == Union{Nothing, typeof(spatialtree(anygl))}
+        @test isconcretetype(typeof(spatialtree(anygl)))
+        @test spatialtree(GeometryLookup(csquares; tree = nothing)) === nothing
     end
 
     @testset "slicing, view, reverse and rebuild do not build" begin
@@ -96,7 +111,7 @@ end
         @test !_built(DD.rebuild(gl; data = csquares[1:2]))
         # identical data keeps the built tree
         @test DD.rebuild(gl; data = parent(gl)).tree === gl.tree
-        @test spatialtree(DD.lookup(dv[1:2], Geometry)) isa SortTileRecursiveTree.STRtree
+        @test spatialtree(DD.lookup(dv[1:2], Geometry)) isa RTree{STR}
     end
 
     @testset "the lookup type does not depend on the geometry count" begin
@@ -126,24 +141,33 @@ end
         @test first(trees) === spatialtree(gl)
     end
 
-    @testset "tree as a type" begin
-        gl = GeometryLookup(csquares; tree = SortTileRecursiveTree.STRtree)
-        @test spatialtree(gl) isa SortTileRecursiveTree.STRtree
-        @test spatialtree(gl[1:2]) isa SortTileRecursiveTree.STRtree
+    @testset "tree as a bulk-load algorithm" begin
+        for algorithm in (STR(), HPR(), Unsorted())
+            gl = GeometryLookup(csquares; tree = algorithm)
+            @test !_built(gl)
+            @test spatialtree(gl) isa RTree{typeof(algorithm)}
+            @test spatialtree(gl[1:2]) isa RTree{typeof(algorithm)}
+            # every algorithm gives the one tree type the lookup type promises
+            @test typeof(spatialtree(gl)) == VectorDataCubes.XYRTree{typeof(algorithm), typeof(csquares)}
+            dv = DimArray([1, 2, 3], Geometry(gl))
+            @test dv[Geometry = Contains((10.5, 10.5))] == [3]
+        end
     end
 
     @testset "tree as a prebuilt instance" begin
-        tree = SortTileRecursiveTree.STRtree(csquares)
+        tree = RTree(HPR(), csquares)
         gl = GeometryLookup(csquares; tree)
         @test spatialtree(gl) === tree
-        @test spatialtree(gl[1:2]) isa SortTileRecursiveTree.STRtree
+        @test spatialtree(gl[1:2]) isa RTree{HPR}
+        # a tree over another vector cannot index this lookup
+        @test_throws ArgumentError GeometryLookup(csquares; tree = RTree(STR(), copy(csquares)))
     end
 
     @testset "rebuild with an explicit tree" begin
         gl = GeometryLookup(csquares)
         @test spatialtree(DD.rebuild(gl; tree = nothing)) === nothing
-        rb = DD.rebuild(gl; data = csquares[1:2], tree = SortTileRecursiveTree.STRtree)
-        @test spatialtree(rb) isa SortTileRecursiveTree.STRtree
+        rb = DD.rebuild(gl; data = csquares[1:2], tree = Unsorted())
+        @test spatialtree(rb) isa RTree{Unsorted}
     end
 end
 
@@ -310,6 +334,11 @@ end
         # the same answer before and after the tree exists
         spatialtree(gl)
         @test Lookups.bounds(gl) == ((0.0, 11.0), (0.0, 11.0))
+        # including for coordinates the tree widens to Float64
+        gl32 = GeometryLookup([_csquare(0f0, 0f0, 1f0, 1f0), _csquare(5f0, 5f0, 6f0, 6f0)])
+        before = Lookups.bounds(gl32)
+        spatialtree(gl32)
+        @test Lookups.bounds(gl32) === before === ((0.0, 6.0), (0.0, 6.0))
         dv = rand(Geometry(gl))
         @test Extents.extent(dv) == Extents.Extent(X = (0.0, 11.0), Y = (0.0, 11.0))
         @test Extents.extent(dv[1:2]) == Extents.Extent(X = (0.0, 2.0), Y = (0.0, 1.0))

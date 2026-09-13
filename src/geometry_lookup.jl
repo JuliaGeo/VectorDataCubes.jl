@@ -4,9 +4,9 @@ import GeoInterface as GI
 import Rasters as RA
 import Extents
 import Missings
-import SortTileRecursiveTree
 
 using Rasters: isnokw, nokw, Lookups, val
+using GeometryOps.FlexibleRTrees: RTree, BulkLoadAlgorithm, STR
 
 """
     Geometry
@@ -15,21 +15,36 @@ A dimension meant to be used with a [`GeometryLookup`](@ref).
 """
 DD.@dim Geometry "Geometry"
 
-# The lazily built spatial accelerator of a `GeometryLookup`, with `builder` a callable
-# `geometries -> tree` such as `SortTileRecursiveTree.STRtree`. `spatialtree` builds the
+# The tree indexes each geometry's `X`/`Y` extent as `Float64`, so its type is known
+# from the geometry vector type alone, whatever the geometries' coordinate type or
+# dimensionality.
+const XYExtent = Extents.Extent{(:X, :Y),Tuple{Tuple{Float64,Float64},Tuple{Float64,Float64}}}
+const XYRTree{A,D} = RTree{A,XYExtent,D,Vector{Int}}
+
+function _xyextent(geometry)
+    ext = GI.extent(geometry)
+    return Extents.Extent(X=Float64.(ext.X), Y=Float64.(ext.Y))
+end
+
+# The lazily built spatial accelerator of a `GeometryLookup`. `spatialtree` builds the
 # tree on its first call and caches it here; slicing or rebuilding a lookup with new
-# geometries starts from a fresh, unbuilt index carrying the same builder.
-mutable struct SpatialIndex{B}
-    const builder::B
-    # `Any`: spatial trees are a trait, not a type hierarchy, and an STRtree's concrete
-    # type encodes its depth, so a typed field would make the lookup's (and every cube's)
-    # type depend on the number of geometries. Atomic because the build is double-checked:
-    # readers take no lock once a tree is there.
-    @atomic tree::Any
+# geometries starts from a fresh, unbuilt index with the same algorithm. The slot is
+# atomic because the build is double-checked: readers take no lock once a tree is there.
+mutable struct SpatialIndex{A<:BulkLoadAlgorithm,Tr<:RTree}
+    const algorithm::A
+    @atomic tree::Union{Nothing,Tr}
     const lock::ReentrantLock
 end
-SpatialIndex(builder) = SpatialIndex(builder, nothing, ReentrantLock())
-SpatialIndex(builder, tree) = SpatialIndex(builder, tree, ReentrantLock())
+SpatialIndex(algorithm::BulkLoadAlgorithm, ::Type{D}) where {D<:AbstractVector} =
+    SpatialIndex{typeof(algorithm),XYRTree{typeof(algorithm),D}}(algorithm, nothing, ReentrantLock())
+SpatialIndex(tree::RTree) = SpatialIndex{typeof(tree.algorithm),typeof(tree)}(tree.algorithm, tree, ReentrantLock())
+
+# `indices` as a `Vector` fixes the leaf index type for every algorithm (`Unsorted` would
+# otherwise keep a `Base.OneTo`); the typed comprehension fixes the extent type for every
+# geometry vector, where `map` would follow its eltype and its array type.
+_buildtree(algorithm::BulkLoadAlgorithm, geometries::AbstractVector) =
+    RTree(algorithm, geometries;
+        indices=collect(eachindex(geometries)), extents=XYExtent[_xyextent(g) for g in geometries])
 
 """
     GeometryLookup(data, dims = (X(), Y()); geometrycolumn, crs, tree, metadata)
@@ -59,11 +74,11 @@ dimension it is wrapped in, so on a cube built as
 - `geometrycolumn`: the geometry column to read when `data` is a table.
 - `crs`: the coordinate reference system. Defaults to `GeoInterface.crs` of
   `data`, then of its first geometry, then `nothing`.
-- `tree`: the spatial accelerator. One of
-  - not given: an `STRtree`, built lazily on the first spatial query;
+- `tree`: the spatial accelerator, a `GeometryOps.FlexibleRTrees.RTree`. One of
+  - not given: a sort-tile-recursive tree, built lazily on the first spatial query;
   - `nothing`: no accelerator, every query scans all geometries;
-  - a tree type such as `SortTileRecursiveTree.STRtree`: built lazily with it;
-  - a prebuilt tree instance: stored as is.
+  - a bulk-load algorithm (`STR()`, `HPR()`, `Unsorted()`): built lazily with it;
+  - a prebuilt `RTree` over the lookup's own geometry vector: stored as is.
 - `metadata`: dimension metadata, `DimensionalData.NoMetadata()` by default.
 
 # Examples
@@ -104,7 +119,7 @@ function GeometryLookup(
             crs = GI.crs(first(geometries))
         end
     end
-    return GeometryLookup(GO.Planar(), geometries, _spatialindex(tree), _checked_dims(dims), crs, metadata)
+    return GeometryLookup(GO.Planar(), geometries, _spatialindex(tree, geometries), _checked_dims(dims), crs, metadata)
 end
 
 function _checked_geometries(geometries)
@@ -143,29 +158,25 @@ function _checked_dims(dims)
     return based
 end
 
-function _spatialindex(tree)
-    if isnokw(tree)
-        SpatialIndex(SortTileRecursiveTree.STRtree)
-    elseif isnothing(tree)
-        nothing
-    elseif tree isa Type && GO.SpatialTreeInterface.isspatialtree(tree)
-        SpatialIndex(tree)
-    elseif GO.SpatialTreeInterface.isspatialtree(tree)
-        # New geometries after a `rebuild` need a builder, and the prebuilt tree's own
-        # type is the only one we know matches it.
-        SpatialIndex(Base.typename(typeof(tree)).wrapper, tree)
-    else
-        throw(ArgumentError("""
-            `tree` must be one of: not given (a lazily built `STRtree`), `nothing` (no
-            accelerator), a spatial tree type such as `SortTileRecursiveTree.STRtree`, or
-            a prebuilt spatial tree (`GeometryOps.SpatialTreeInterface.isspatialtree(tree)`);
-            got a `$(typeof(tree))`.
-            """))
-    end
+_spatialindex(tree, geometries) = isnokw(tree) ? SpatialIndex(STR(), typeof(geometries)) : _spatialindex_error(tree)
+_spatialindex(::Nothing, geometries) = nothing
+_spatialindex(algorithm::BulkLoadAlgorithm, geometries) = SpatialIndex(algorithm, typeof(geometries))
+function _spatialindex(tree::RTree, geometries)
+    tree.data === geometries || throw(ArgumentError("""
+        A prebuilt `tree` must index the lookup's own geometry vector — for a table, its
+        geometry column — but `tree.data` is a different object. Build the tree over that
+        vector, or pass a bulk-load algorithm (`STR()`, `HPR()`, `Unsorted()`) instead.
+        """))
+    return SpatialIndex(tree)
 end
+@noinline _spatialindex_error(tree) = throw(ArgumentError("""
+    `tree` must be one of: not given (a lazily built `STR()` tree), `nothing` (no
+    accelerator), a `GeometryOps.FlexibleRTrees` bulk-load algorithm (`STR()`, `HPR()`,
+    `Unsorted()`), or a prebuilt `GeometryOps.FlexibleRTrees.RTree`; got a `$(typeof(tree))`.
+    """))
 
-_fresh(::Nothing) = nothing
-_fresh(index::SpatialIndex) = SpatialIndex(index.builder)
+_fresh(::Nothing, geometries) = nothing
+_fresh(index::SpatialIndex, geometries) = SpatialIndex(index.algorithm, typeof(geometries))
 
 """
     spatialtree(l::GeometryLookup)
@@ -185,7 +196,7 @@ function _spatialtree(index::SpatialIndex, geometries)
     return lock(index.lock) do
         built = _builttree(index)
         isnothing(built) || return built
-        new_tree = index.builder(geometries)
+        new_tree = _buildtree(index.algorithm, geometries)
         @atomic :release index.tree = new_tree
         return new_tree
     end
@@ -236,9 +247,9 @@ function DD.rebuild(
         data=l.data, tree=nokw, dims=l.dims, crs=nokw, manifold=l.manifold, metadata=l.metadata
     )
     index = if isnokw(tree)
-        data === l.data ? l.tree : _fresh(l.tree)
+        data === l.data ? l.tree : _fresh(l.tree, data)
     else
-        _spatialindex(tree)
+        _spatialindex(tree, data)
     end
     new_crs = if isnokw(crs)
         data_crs = GI.crs(data)
@@ -271,8 +282,9 @@ function _extent(l::GeometryLookup)
     geometries = parent(l)
     isempty(geometries) && return nothing
     tree = _builttree(l)
-    isnothing(tree) || return GI.extent(tree)
-    return mapreduce(GI.extent, Extents.union, geometries)
+    isnothing(tree) || return Extents.extent(tree)
+    # `_xyextent`, like the tree's own extent, so bounds do not change once it is built.
+    return mapreduce(_xyextent, Extents.union, geometries)
 end
 
 function Base.:(==)(a::GeometryLookup, b::GeometryLookup)

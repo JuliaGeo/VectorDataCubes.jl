@@ -260,7 +260,7 @@ end
 function _maybe_get_candidates(lookup::GeometryLookup, selector_extent)
     tree = spatialtree(lookup)
     (isnothing(tree) || isnothing(selector_extent)) && return 1:length(lookup)
-    Extents.disjoint(GI.extent(tree), selector_extent) && return Int[]
+    Extents.disjoint(Extents.extent(tree), selector_extent) && return Int[]
     return STI.query(tree, Base.Fix1(Extents.intersects, selector_extent))::Vector{Int}
 end
 
