@@ -1,6 +1,7 @@
 module VectorDataCubes
 
 include("geometry_lookup.jl")
+include("selectors.jl")
 include("zonal.jl")
 include("tables.jl")
 
