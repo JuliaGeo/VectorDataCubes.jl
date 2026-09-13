@@ -48,7 +48,7 @@ julia --project=docs examples/02_zonal_countries.jl
 in its own module — each must do its own `using VectorDataCubes` (and other imports);
 nothing leaks in from `runtests.jl`. A new test file must follow suit.
 
-`test/basics.jl` and the examples need network access. CI runs Julia 1.10 and `1`.
+`test/basics.jl` and the examples need network access. CI runs Julia `lts` and `1`.
 
 For iterative work, prefer the persistent Julia REPL via the `mcp__julia__*` tools — it
 avoids re-paying Julia's per-process compile latency on every run.
