@@ -208,15 +208,7 @@ GI.crs(l::GeometryLookup) = l.crs
 # dimension it came from as a keyword.
 RA.setcrs(l::GeometryLookup, crs; dim=nothing) = DD.rebuild(l; crs)
 
-"""
-    Rasters.reproject(target, l::GeometryLookup)
-
-Reproject every geometry of `l` from its crs to `target` with `GeometryOps.reproject`,
-returning a new lookup.
-
-Needs Proj.jl loaded (`import Proj`), like `GeometryOps.reproject` itself. A lookup
-without a crs cannot be reprojected; set one with `Rasters.setcrs`.
-"""
+# Needs Proj.jl loaded, like `GeometryOps.reproject` itself.
 function RA.reproject(target::RA.GeoFormat, l::GeometryLookup)
     isnothing(GI.crs(l)) && throw(ArgumentError(
         "Cannot reproject a `GeometryLookup` with no crs. Set one first with `Rasters.setcrs`."

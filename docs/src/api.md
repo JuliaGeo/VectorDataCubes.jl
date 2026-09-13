@@ -18,25 +18,26 @@ VectorDataCubes.spatialtree
 
 ## Selectors
 
-A `GeometryLookup` resolves DimensionalData's selectors spatially: each one narrows the
-candidates with the spatial tree, then refines them with an exact GeometryOps predicate.
-On the `Geometry` axis, `Contains`, `At`, `Near`, `Touches`, `Where` and the predicates
-of DE9IM.jl are accepted; on the internal `X`/`Y` axes, pairs such as
-`cube[X(At(x)), Y(At(y))]` or `cube[X(a .. b), Y(c .. d)]`.
+A [`GeometryLookup`](@ref) resolves DimensionalData's selectors spatially: each one narrows
+the candidates with the spatial tree, then refines them with an exact GeometryOps predicate.
+[`VectorDataCubes.mask`](@ref) turns any of them into a `Bool` mask.
 
-```@meta
-# The signatures below name `Lookups`, `Extents` and `DE9IM`, which are in scope here.
-CurrentModule = VectorDataCubes
-```
+On the `Geometry` axis:
+
+- `Contains(point)`: every geometry covering the point; closed, so a point on a shared
+  border belongs to each geometry it lies on.
+- `At(geom)`: the geometry equal to `geom`; `Near(point)`: the nearest geometry, ties to
+  the lowest index.
+- `Touches(extent)`: the geometries intersecting the extent.
+- `Where(f)`: the geometries `f` holds for; a curried GeometryOps predicate such as
+  `GO.intersects(geom)` is narrowed by the tree first.
+- A DE9IM.jl predicate, `DE9IM.Covers(geom)` and the like.
+
+On the internal `X`/`Y` axes, pairs: `At`/`At`, `Contains`/`Contains`, `Near`/`Near`, two
+intervals (geometries covered by the box) and `Touches`/`Touches` (geometries intersecting
+it), as `cube[X(At(x)), Y(At(y))]` or `cube[X(a .. b), Y(c .. d)]`.
 
 ```@docs
-Lookups.selectindices(::GeometryLookup, ::Lookups.Contains)
-Lookups.selectindices(::GeometryLookup, ::Lookups.At)
-Lookups.selectindices(::GeometryLookup, ::Lookups.Near)
-Lookups.selectindices(::GeometryLookup, ::Lookups.Touches{<:Extents.Extent})
-Lookups.selectindices(::GeometryLookup, ::Lookups.Where)
-Lookups.selectindices(::GeometryLookup, ::DE9IM.DE9IMPredicate)
-Lookups.selectindices(::GeometryLookup, ::Tuple)
 VectorDataCubes.mask
 ```
 
@@ -44,10 +45,7 @@ VectorDataCubes.mask
 
 A lookup carries its crs (`GeoInterface.crs`, set with `Rasters.setcrs`), and
 `Rasters.reproject` reprojects it through `GeometryOps.reproject`, which needs Proj.jl loaded.
-
-```@docs
-RA.reproject(::RA.GeoFormat, ::GeometryLookup)
-```
+Reprojecting a lookup with no crs is an `ArgumentError`; set one first.
 
 ## Zonal statistics
 
