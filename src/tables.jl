@@ -115,7 +115,7 @@ layers and the crs.
 
 The country containing a point, from the 110 m Natural Earth countries:
 
-```@example vectordatacube
+```julia
 using VectorDataCubes, NaturalEarth
 countries = vectordatacube(naturalearth("admin_0_countries", 110))
 countries[Geometry(Contains((9.0, 50.0)))][:NAME]
