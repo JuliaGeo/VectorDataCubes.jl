@@ -92,12 +92,11 @@ Two coverage caveats, handled by keywords:
   `missing` instead of `mean` of an empty slice (which would be `NaN`).
 =#
 
-temps = zonal(mean, monthly; of=geodim, emptyval=missing, progress=false)
-size(temps) == (12, length(geodim))
+temps = zonal(mean, monthly; of=geodim, emptyval=missing, progress=true)
 
 # Seasonal cycle of the country containing a point in the US Great Plains:
-usa = temps[Geometry(Contains((-100.0, 40.0)))]
-round.(vec(parent(usa)); digits=1)
+usa = temps[Geometry = Contains((-100.0, 40.0))]
+round.(usa; digits=1)
 
 #=
 Countries entirely outside the raster's coverage (here, those fully south of
@@ -108,8 +107,8 @@ so indexing one with positions found in the other is always in sync.
 =#
 july = temps[Ti=At(7)]
 january = temps[Ti=At(1)]
-println("warmest in July:    ", northam[:NAME][argmax(skipmissing(parent(july)))])
-println("coldest in January: ", northam[:NAME][argmin(skipmissing(parent(january)))])
+println("warmest in July:    ", northam.NAME[argmax(skipmissing(july))])
+println("coldest in January: ", northam.NAME[argmin(skipmissing(january))])
 
 #=
 ## Reprojection
@@ -118,7 +117,8 @@ The geometry lookup carries its CRS, so the whole cube can be reprojected;
 only the geometry dimension is affected.
 =#
 
-temps_3857 = reproject(EPSG(3857), temps)
+temps_3857 = Rasters.reproject(EPSG(3857), temps)
+#
 crs(DD.lookup(temps_3857, Geometry)) == EPSG(3857)
 
 #=

@@ -46,7 +46,6 @@ spatial selectors on the cube are fast, and it carries the CRS (the data is in
 NAD27, EPSG:4267).
 =#
 
-geoms = GO.get_geometries(counties)
 gl = GeometryLookup(counties)
 # You could also write `gl = GeometryLookup(GO.get_geometries(counties); crs=GI.crs(counties))` if you want to do this manually.
 
@@ -68,7 +67,7 @@ directly. Which county contains Raleigh?
 =#
 
 raleigh = (-78.6382, 35.7796)
-wake = cube[Geometry(Contains(raleigh))]
+wake = cube[Geometry = Contains(raleigh)]
 # This returns a DimStack that has certain elements.  We can select a layer of the stack:
 wake.births
 # and check it has the correct things:
