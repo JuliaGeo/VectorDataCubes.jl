@@ -42,8 +42,8 @@ VectorDataCubes.mask
 
 ## Coordinate reference systems
 
-A lookup carries its crs (`GeoInterface.crs`, set with `Rasters.setcrs`); with Proj
-loaded it can be reprojected.
+A lookup carries its crs (`GeoInterface.crs`, set with `Rasters.setcrs`), and
+`Rasters.reproject` reprojects it through `GeometryOps.reproject`, which needs Proj.jl loaded.
 
 ```@docs
 RA.reproject(::RA.GeoFormat, ::GeometryLookup)

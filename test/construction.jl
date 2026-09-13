@@ -208,14 +208,8 @@ end
     @testset "reproject" begin
         gl = GeometryLookup(csquares; crs = EPSG(4326))
         # Another test file may already have loaded Proj into this session.
-        if isnothing(Base.get_extension(VectorDataCubes, :VectorDataCubesProjExt))
-            err = try
-                reproject(EPSG(3857), gl)
-            catch e
-                e
-            end
-            @test err isa ArgumentError
-            @test occursin("import Proj", err.msg)
+        if isnothing(Base.get_extension(GO, :GeometryOpsProjExt))
+            @test_throws MethodError reproject(EPSG(3857), gl)
         else
             @test crs(reproject(EPSG(3857), gl)) == EPSG(3857)
         end

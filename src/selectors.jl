@@ -6,8 +6,6 @@ const STI = GO.SpatialTreeInterface
 # on `spatialtree(lookup)` (all indices without a tree), then refine with an exact GeometryOps
 # predicate. Multi-index results are `Vector{Int}`; `At`, `Near` and `(At, At)` return an `Int`.
 
-Lookups.selectindices(lookup::GeometryLookup, sel::Lookups.StandardIndices) = sel
-
 # Dimension-wrapped selectors: sort into the lookup's internal dim order, then pair up.
 function Lookups.selectindices(lookup::GeometryLookup, sel::DD.DimTuple)
     Lookups.selectindices(lookup, map(_val_or_nothing, DD.sortdims(sel, DD.dims(lookup))))
@@ -66,9 +64,8 @@ _select_pair(lookup::GeometryLookup, x::Lookups.Near, y::Lookups.Near) =
     _nearest(lookup, (val(x), val(y)))
 function _select_pair(lookup::GeometryLookup, x::_PairInterval, y::_PairInterval)
     box = Extents.Extent(X=_axisbounds(x), Y=_axisbounds(y))
-    return _select_predicate(lookup, _covered_by_box, box)
+    return _select_predicate(lookup, GO.coveredby, box)
 end
-_covered_by_box(geom, box) = GO.covers(box, geom)
 function _select_pair(lookup::GeometryLookup, x::_PairTouches, y::_PairTouches)
     box = Extents.Extent(X=_axisbounds(x), Y=_axisbounds(y))
     return _select_predicate(lookup, GO.intersects, box)
@@ -130,6 +127,8 @@ The search is a branch-and-bound over [`spatialtree`](@ref), or a linear scan wi
 Only points are accepted, and an empty lookup is an `ArgumentError`.
 """
 Lookups.selectindices(lookup::GeometryLookup, sel::Lookups.Near) = _nearest(lookup, _checked_point(sel))
+# Same body as DimensionalData's `selectindices(::Lookup, ::Selector{<:AbstractVector})`, but
+# needed: the `At`/`Near` methods above and that generic one are ambiguous for a vector value.
 Lookups.selectindices(lookup::GeometryLookup, sel::Union{Lookups.At{<:AbstractVector},Lookups.Near{<:AbstractVector}}) =
     Int[Lookups.selectindices(lookup, DD.rebuild(sel; val=v)) for v in val(sel)]
 
@@ -247,14 +246,14 @@ function _select_predicate(lookup::GeometryLookup, ::typeof(GO.disjoint), geom)
     return findall(keep)
 end
 
-# Only extent relations that hold for a node whenever they hold for one of its children
-# can narrow a tree query, which is why this is always `Extents.intersects`: every
-# predicate here needs at least one shared point.
+# Only extent relations that hold for a node whenever they hold for one of its children can
+# narrow a tree query, which is why the narrowing is always `query`'s extent intersection:
+# every predicate here needs at least one shared point. Candidates come back sorted.
 function _maybe_get_candidates(lookup::GeometryLookup, selector_extent)
     tree = spatialtree(lookup)
     (isnothing(tree) || isnothing(selector_extent)) && return 1:length(lookup)
     Extents.disjoint(Extents.extent(tree), selector_extent) && return Int[]
-    return STI.query(tree, Base.Fix1(Extents.intersects, selector_extent))::Vector{Int}
+    return GO.FlexibleRTrees.query(tree, selector_extent)
 end
 
 function _union(f, lookup::GeometryLookup, values)
@@ -275,10 +274,10 @@ function _first_covering(lookup::GeometryLookup, point)
     return isnothing(k) ? nothing : candidates[k]
 end
 
-# An `Extents.Extent` satisfies `GI.isgeometry`, but it is a bounding box rather than a
-# geometry: `Touches(extent)` and the interval pairs take extents, the rest take geometries.
-_isgeometry(x) = GI.isgeometry(x) && !(x isa Extents.Extent)
-_ispoint(x) = _isgeometry(x) && GI.trait(x) isa GI.PointTrait
+# An `Extents.Extent` satisfies `GI.isgeometry` (as a `RectangleTrait`), but it is a bounding
+# box, not a geometry: `Touches(extent)` and the interval pairs take extents, the rest geometries.
+_isgeometry(x) = GI.isgeometry(x) && !(GI.geomtrait(x) isa GI.RectangleTrait)
+_ispoint(x) = _isgeometry(x) && GI.geomtrait(x) isa GI.AbstractPointTrait
 
 function _checked_geometry(sel::Lookups.Selector)
     x = val(sel)

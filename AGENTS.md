@@ -9,25 +9,25 @@ stack whose `Geometry` dimension is backed by a `GeometryLookup` (a geometry vec
 packed R-tree). The payoff is spatial indexing — `cube[Geometry(Contains(point))]`,
 `cube[X(a..b), Y(c..d)]` — on top of everything DimensionalData/Rasters already gives you.
 
-Three entry points, one per `src/` file (plus the selectors split out of the core):
+Five `src/` files, one concern each:
 
 - `geometry_lookup.jl` — the `Geometry` dimension and `GeometryLookup` (the spatial-indexing core:
-  struct, constructor, lazily built tree via `spatialtree`, DD interface, crs, `reproject` stub).
+  struct, constructor, lazily built tree via `spatialtree`, DD interface, crs, `reproject`).
 - `selectors.jl` — every `Lookups.selectindices` method for a `GeometryLookup`.
 - `zonal.jl` — `VectorDataCubes.zonal`, aggregating a raster over geometries into a cube.
 - `extract.jl` — `VectorDataCubes.extract`, sampling a raster at points into a cube.
 - `tables.jl` — `vectordatacube` / `vectordatacubetable`, round-tripping a table ↔ cube;
   `VectorDataCubeTable` (the returned table) carries geometry columns and crs as DataAPI metadata.
 
-Plus two package extensions. `ext/VectorDataCubesProjExt.jl` (loaded with Proj) supplies
-`Rasters.reproject` for a `GeometryLookup`; without it the stub throws an `ArgumentError`
-asking for `import Proj`. `ext/VectorDataCubesMakieExt.jl` (loaded with Makie)
+Plus one package extension, `ext/VectorDataCubesMakieExt.jl` (loaded with Makie), which
 makes a `GeometryLookup`, and any dimension wrapping one, plottable by converting its
 geometries to GeometryBasics and forwarding to Makie's `poly`/`lines`/`scatter` recipes.
 Its `convert_arguments`/`plottype` methods name the lookup type, which is more specific
 than the `AbstractArray{<:SomeGeometry}` methods the geometry packages install through
 `GeoInterface.@enable_makie`, so one conversion covers every element type. Nothing there
-touches `DimArray`s — DimensionalData's own Makie extension owns those.
+touches `DimArray`s — DimensionalData's own Makie extension owns those. Reprojection needs
+no extension: `Rasters.reproject` on a `GeometryLookup` calls `GeometryOps.reproject`, which
+needs Proj.jl loaded and says so itself (a `MethodError` carrying GeometryOps' hint).
 
 ## Commands
 

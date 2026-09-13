@@ -63,13 +63,8 @@ end
 
 # Stacks fan out by layer, so layers with different dimensions each produce
 # a cube of the right shape.
-function _zonal_geometries(f, st::RA.AbstractRasterStack, geomdim; kw...)
-    K = keys(st)
-    layers = map(K) do k
-        _zonal_geometries(f, st[k], geomdim; kw...)
-    end
-    return RA.RasterStack(NamedTuple{K}(layers); metadata=DD.metadata(st))
-end
+_zonal_geometries(f, st::RA.AbstractRasterStack, geomdim; kw...) =
+    DD.maplayers(A -> _zonal_geometries(f, A, geomdim; kw...), st)
 function _zonal_geometries(f, x::RA.AbstractRaster, geomdim;
     spatialslices=true, skipmissing=true, emptyval=nokw, progress=true, threaded=true, kw...
 )
@@ -151,7 +146,7 @@ end
 
 # Wraps `f` to reduce each spatial slice, returning a `Raster` over the remaining dims. With
 # `skipmissing=true` Rasters passes the wrapper `skipmissing(masked)`; that is unwrapped and
-# `skipmissing` re-applied per slice.
+# `skipmissing` (with `emptyval`) re-applied per slice by Rasters' own call helper.
 struct _SpatialSliceify{F,D,E}
     f::F
     dims::D
@@ -159,18 +154,9 @@ struct _SpatialSliceify{F,D,E}
 end
 
 (s::_SpatialSliceify)(x::DD.AbstractDimArray) =
-    _mapspatialslices(_empty_aware(s.f, s.emptyval), x, s.dims)
-(s::_SpatialSliceify)(sm::Base.SkipMissing) =
-    _mapspatialslices(_empty_aware(s.f, s.emptyval) ∘ Base.skipmissing, sm.x, s.dims)
-(s::_SpatialSliceify)(sm::RA.SkipMissingVal) =
-    _mapspatialslices(_empty_aware(s.f, s.emptyval) ∘ Base.skipmissing, sm.x, s.dims)
-
-# If `emptyval` was passed, return it for empty (e.g. fully-masked) slices
-# instead of calling `f` on an empty iterator.
-function _empty_aware(f, emptyval)
-    isnokw(emptyval) && return f
-    return el -> isempty(el) ? emptyval : f(el)
-end
+    _mapspatialslices(a -> RA._maybe_skipmissing_call(s.f, a, false, s.emptyval), x, s.dims)
+(s::_SpatialSliceify)(sm::Union{Base.SkipMissing,RA.SkipMissingVal}) =
+    _mapspatialslices(a -> RA._maybe_skipmissing_call(s.f, a, true, s.emptyval), sm.x, s.dims)
 
 function _mapspatialslices(g, x::DD.AbstractDimArray, slicedims)
     otherdims = DD.otherdims(x, slicedims)

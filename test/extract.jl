@@ -49,9 +49,12 @@ pts = [(1.2, 1.3), (5.5, 2.5), (20.0, 20.0)]
     end
 
     @testset "RasterStack -> stack of cubes" begin
-        st = RasterStack((flat=ras2d, cube=ras3d))
+        flat = rebuild(ras2d; metadata=Dict{Symbol,Any}(:units => "K"))
+        st = RasterStack((flat=flat, cube=ras3d); metadata=Dict{Symbol,Any}(:source => "test"))
         res = extract(st, pts)
         @test res isa RasterStack
+        @test DD.metadata(res)[:source] == "test"
+        @test DD.metadata(res[:flat])[:units] == "K"
         @test size(res[:flat]) == (3,)
         @test size(res[:cube]) == (3, 3)
         @test res[:flat][2] == 6.0
@@ -84,6 +87,32 @@ pts = [(1.2, 1.3), (5.5, 2.5), (20.0, 20.0)]
         rasmv = Raster(data, (ex, ey); name=:vals, missingval=-9999.0)
         @test collect(extract(rasmv, [(0.5, 0.5), (1.5, 1.5)]; skipmissing=true)) == [2.0]
         @test isequal(collect(extract(rasmv, [(0.5, 0.5), (1.5, 1.5)])), [-9999.0, 2.0])
+    end
+
+    @testset "skipmissing drops points in an all-missing cell, missing or sentinel" begin
+        # pts[1] sits in cell (2, 2), pts[2] in cell (6, 3)
+        withmissing = Array{Union{Missing,Float64}}(parent(ras2d))
+        withmissing[2, 2] = missing
+        sentinel = copy(parent(ras2d))
+        sentinel[2, 2] = -9999.0
+        for r in (Raster(withmissing, (ex, ey)), Raster(sentinel, (ex, ey); missingval=-9999.0))
+            res = extract(r, pts[1:2]; skipmissing=true)
+            @test collect(res) == [6.0]
+            @test parent(DD.lookup(res, Geometry)) == pts[2:2]
+        end
+        # on a 3-D raster the cell is a slice, and only an all-missing slice drops the point
+        withmissing3 = Array{Union{Missing,Float64}}(parent(ras3d))
+        withmissing3[2, 2, :] .= missing
+        withmissing3[6, 3, 1] = missing
+        resm = extract(Raster(withmissing3, (ex, ey, eti)), pts[1:2]; skipmissing=true)
+        @test parent(DD.lookup(resm, Geometry)) == pts[2:2]
+        @test isequal(vec(collect(resm)), [missing, 12.0, 18.0])
+        sentinel3 = copy(parent(ras3d))
+        sentinel3[2, 2, :] .= -9999.0
+        sentinel3[6, 3, 1] = -9999.0
+        ress = extract(Raster(sentinel3, (ex, ey, eti); missingval=-9999.0), pts[1:2]; skipmissing=true)
+        @test parent(DD.lookup(ress, Geometry)) == pts[2:2]
+        @test vec(collect(ress)) == [-9999.0, 12.0, 18.0]
     end
 
     @testset "a reverse-ordered Y axis gives the same answer" begin

@@ -154,7 +154,6 @@ _first_few(xs; n=5) =
 # GeoParquet file, ...) has to be told which one indexes the cube.
 function _geometrycolumn(table)
     geomcols = GI.geometrycolumns(table)
-    (isnothing(geomcols) || isempty(geomcols)) && return :geometry
     length(geomcols) == 1 || throw(ArgumentError("""
     The table declares $(length(geomcols)) geometry columns \
     ($(join((":$c" for c in geomcols), ", "))), but a cube is indexed by one of them.

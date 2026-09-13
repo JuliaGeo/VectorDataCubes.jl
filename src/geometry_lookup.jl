@@ -211,21 +211,19 @@ RA.setcrs(l::GeometryLookup, crs; dim=nothing) = DD.rebuild(l; crs)
 """
     Rasters.reproject(target, l::GeometryLookup)
 
-Reproject every geometry of `l` from its crs to `target`, returning a new lookup.
+Reproject every geometry of `l` from its crs to `target` with `GeometryOps.reproject`,
+returning a new lookup.
 
-Needs Proj.jl: run `import Proj` first. A lookup without a crs cannot be
-reprojected; set one with `Rasters.setcrs`.
+Needs Proj.jl loaded (`import Proj`), like `GeometryOps.reproject` itself. A lookup
+without a crs cannot be reprojected; set one with `Rasters.setcrs`.
 """
 function RA.reproject(target::RA.GeoFormat, l::GeometryLookup)
     isnothing(GI.crs(l)) && throw(ArgumentError(
         "Cannot reproject a `GeometryLookup` with no crs. Set one first with `Rasters.setcrs`."
     ))
-    return DD.rebuild(l; data=_reproject(target, l), crs=target)
+    geometries = GO.reproject(parent(l); source_crs=GI.crs(l), target_crs=target)
+    return DD.rebuild(l; data=geometries, crs=target)
 end
-# `ext/VectorDataCubesProjExt.jl` adds the method that does the work.
-_reproject(target, ::GeometryLookup) = throw(ArgumentError(
-    "Reprojecting a `GeometryLookup` needs Proj.jl: run `import Proj` and try again."
-))
 
 # DimensionalData interface
 

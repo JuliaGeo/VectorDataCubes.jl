@@ -7,7 +7,7 @@ using Rasters.Lookups
 using VectorDataCubes: zonal
 import DimensionalData as DD
 import GeometryOps as GO, GeoInterface as GI
-import Proj # the "reproject" testset needs the Proj extension
+import Proj # the "reproject" testset needs GeometryOps' Proj extension
 using Statistics: mean
 using Dates
 
@@ -105,6 +105,11 @@ zgl = GeometryLookup([zoneA, zoneB, zoneC])
         @test res[Ti=2, Geometry=1] == -1.0
         @test res[Ti=1, Geometry=1] ≈ 9.5
         @test res[Ti=3, Geometry=1] ≈ 28.5
+        # `emptyval = missing` fills the empty slice only, not the whole geometry
+        resm = zonal(mean, rasm; of=GeometryLookup([zoneD]), emptyval=missing, progress=false)
+        @test ismissing(resm[Ti=2, Geometry=1])
+        @test resm[Ti=1, Geometry=1] ≈ 9.5
+        @test resm[Ti=3, Geometry=1] ≈ 28.5
     end
 
     @testset "emptyval with a masked-out and an off-raster geometry" begin
@@ -203,8 +208,10 @@ zgl = GeometryLookup([zoneA, zoneB, zoneC])
         res = zonal(sum, rasmeta; of=zgl, progress=false)
         @test DD.name(res) == :vals
         @test DD.metadata(res)[:units] == "K"
-        st = RasterStack((flat=ras2d, cube=ras3d); metadata=Dict{Symbol,Any}(:source => "test"))
-        @test DD.metadata(zonal(sum, st; of=zgl, progress=false))[:source] == "test"
+        st = RasterStack((flat=rasmeta, cube=ras3d); metadata=Dict{Symbol,Any}(:source => "test"))
+        stres = zonal(sum, st; of=zgl, progress=false)
+        @test DD.metadata(stres)[:source] == "test"
+        @test DD.metadata(stres[:flat])[:units] == "K"
     end
 
     @testset "all geometries off-raster keeps the cube shape" begin

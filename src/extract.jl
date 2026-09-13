@@ -55,7 +55,7 @@ _pointdim(points, geometrycolumn, crs) =
 function _checkpoints(geomdim)
     geoms = parent(val(geomdim))
     isempty(geoms) && throw(ArgumentError("Cannot extract at an empty `GeometryLookup`."))
-    i = findfirst(g -> !(GI.trait(g) isa GI.PointTrait), geoms)
+    i = findfirst(g -> !(GI.trait(g) isa GI.AbstractPointTrait), geoms)
     isnothing(i) || throw(ArgumentError(
         "`extract` samples `x` at points, but geometry $i has trait " *
         "`$(nameof(typeof(GI.trait(geoms[i]))))`; use `VectorDataCubes.zonal` to " *
@@ -88,22 +88,15 @@ end
 
 _celldims(xydims, cell) = map(DD.rebuild, xydims, cell)
 
-function _missingcell(x::RA.AbstractRaster, xydims, cell)
-    v = x[_celldims(xydims, cell)...]
-    mv = RA.missingval(x)
-    return v isa AbstractArray ? all(el -> _ismissingval(el, mv), v) : _ismissingval(v, mv)
-end
+# Rasters' `skipmissing` skips `missing` and the raster's `missingval` alike.
+_missingcell(x::RA.AbstractRaster, xydims, cell) =
+    isempty(skipmissing(view(x, _celldims(xydims, cell)...)))
 _missingcell(st::RA.AbstractRasterStack, xydims, cell) =
     any(layer -> _missingcell(layer, xydims, cell), DD.layers(st))
-
-_ismissingval(v, mv) = ismissing(v) || isequal(v, mv)
 
 function _cellcube(x::RA.AbstractRaster, xydims, cells, geomdim)
     zs = map(c -> isnothing(c) ? missing : x[_celldims(xydims, c)...], cells)
     return _geometry_cube(x, zs, geomdim, DD.otherdims(x, xydims))
 end
-function _cellcube(st::RA.AbstractRasterStack, xydims, cells, geomdim)
-    K = keys(st)
-    layers = map(k -> _cellcube(st[k], xydims, cells, geomdim), K)
-    return RA.RasterStack(NamedTuple{K}(layers); metadata=DD.metadata(st))
-end
+_cellcube(st::RA.AbstractRasterStack, xydims, cells, geomdim) =
+    DD.maplayers(A -> _cellcube(A, xydims, cells, geomdim), st)
