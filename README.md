@@ -23,8 +23,8 @@ used in the examples:
 
 ```julia
 using Pkg
-Pkg.add(url = "https://github.com/asinghvi17/VectorDataCubes.jl")
-Pkg.add(["DimensionalData", "GeoInterface", "Rasters", "Statistics", "Tables"])
+Pkg.add("VectorDataCubes")
+Pkg.add(["DimensionalData", "GeoInterface", "Rasters", "Statistics", "Tables"]) # needed to use the package
 ```
 
 This example stores two years of observations over two square regions:
@@ -146,6 +146,8 @@ zonal statistics, sampling rasters at points, and taxi trips with separate
 origin and destination geometry axes. They adapt vector data cube tutorials
 from the Python `xvec` and R `stars` ecosystems.
 
+These are also rendered in the docs, so please check those out!
+
 From a checkout, run an example with the documentation environment:
 
 ```sh
@@ -154,3 +156,7 @@ julia --project=docs examples/01_intro_nc_sids.jl
 ```
 
 Each example downloads its datasets into `examples/data/` on first use.
+
+## AI disclosure
+
+This package was written with the help of generative AI, including Claude and Codex.
