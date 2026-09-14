@@ -4,10 +4,9 @@ import GeoInterface as GI
 import Rasters as RA
 import Extents
 import Missings
-import SortTileRecursiveTree
-import Proj # to load GeometryOps' Proj extension for `reproject`
 
-using Rasters: isnokw, nokw, Lookups, val, Dimensions, dims
+using Rasters: isnokw, nokw, Lookups, val
+using GeometryOps.FlexibleRTrees: RTree, BulkLoadAlgorithm, STR
 
 """
     Geometry
@@ -16,21 +15,67 @@ A dimension meant to be used with a [`GeometryLookup`](@ref).
 """
 DD.@dim Geometry "Geometry"
 
+# The tree indexes each geometry's `X`/`Y` extent as `Float64`, so its type is known
+# from the geometry vector type alone, whatever the geometries' coordinate type or
+# dimensionality.
+const XYExtent = Extents.Extent{(:X, :Y),Tuple{Tuple{Float64,Float64},Tuple{Float64,Float64}}}
+const XYRTree{A,D} = RTree{A,XYExtent,D,Vector{Int}}
+
+function _xyextent(geometry)
+    ext = GI.extent(geometry)
+    return Extents.Extent(X=Float64.(ext.X), Y=Float64.(ext.Y))
+end
+
+# The lazily built spatial accelerator of a `GeometryLookup`. `spatialtree` builds and caches
+# the tree on first use; a rebuild with new geometries gets a fresh index, same algorithm. The
+# slot is atomic so readers take no lock once a tree is there (the build is double-checked).
+mutable struct SpatialIndex{A<:BulkLoadAlgorithm,Tr<:RTree}
+    const algorithm::A
+    @atomic tree::Union{Nothing,Tr}
+    const lock::ReentrantLock
+end
+SpatialIndex(algorithm::BulkLoadAlgorithm, ::Type{D}) where {D<:AbstractVector} =
+    SpatialIndex{typeof(algorithm),XYRTree{typeof(algorithm),D}}(algorithm, nothing, ReentrantLock())
+SpatialIndex(tree::RTree) = SpatialIndex{typeof(tree.algorithm),typeof(tree)}(tree.algorithm, tree, ReentrantLock())
+
+# `indices` as a `Vector` fixes the leaf index type for every algorithm (`Unsorted` would
+# otherwise keep a `Base.OneTo`); the typed comprehension fixes the extent type for every
+# geometry vector, where `map` would follow its eltype and its array type.
+_buildtree(algorithm::BulkLoadAlgorithm, geometries::AbstractVector) =
+    RTree(algorithm, geometries;
+        indices=collect(eachindex(geometries)), extents=XYExtent[_xyextent(g) for g in geometries])
+
 """
-    GeometryLookup(data, dims = (X(), Y()); geometrycolumn = nothing)
+    GeometryLookup(data, dims = (X(), Y()); geometrycolumn, crs, tree, metadata)
 
-A lookup type for geometry dimensions in vector data cubes.
+A DimensionalData `Lookup` over geometries, with spatial indexing.
 
-`GeometryLookup` provides efficient spatial indexing and lookup for 
-geometries using an STRtree (Sort-Tile-Recursive tree). 
+The lookup of the [`Geometry`](@ref) dimension of a vector data cube: a vector of geometries
+plus a lazily built spatial tree. Selectors — `Contains(point)`, `Touches(extent)`,
+`Where(GO.intersects(geom))`, DE9IM.jl predicates — narrow by the tree, then test exactly.
 
-It is used as the lookup type for geometry dimensions in vector 
-data cubes, enabling fast spatial queries and operations.
+The lookup spans its internal `dims` as well as the dimension wrapping it, so on
+`DimArray(values, Geometry(GeometryLookup(geoms)))` both `cube[Geometry = Contains(point)]`
+and `cube[X(a..b), Y(c..d)]` work.
 
-It spans the dimensions given to it in `dims`, as well as the dimension
- it's wrapped in - you would construct a DimArray with a GeometryLookup
-like `DimArray(data, Geometry(GeometryLookup(data, dims)))`.
-Here, `Geometry` is a dimension - but selectors in X and Y will also work!
+# Arguments
+
+- `data`: a vector of geometries, or any table / collection that
+  `GeometryOpsCore.get_geometries` understands. `missing` elements are an error.
+- `dims`: one `X` and one `Y` dimension, in either order. Geometry coordinates
+  are always `(x, y)`; `dims` only names the internal dimensions.
+
+# Keywords
+
+- `geometrycolumn`: the geometry column to read when `data` is a table.
+- `crs`: the coordinate reference system. Defaults to `GeoInterface.crs` of
+  `data`, then of its first geometry, then `nothing`.
+- `tree`: the spatial accelerator, a `GeometryOps.FlexibleRTrees.RTree`. One of
+  - not given: a sort-tile-recursive tree, built lazily on the first spatial query;
+  - `nothing`: no accelerator, every query scans all geometries;
+  - a bulk-load algorithm (`STR()`, `HPR()`, `Unsorted()`): built lazily with it;
+  - a prebuilt `RTree` over the lookup's own geometry vector: stored as is.
+- `metadata`: dimension metadata, `DimensionalData.NoMetadata()` by default.
 
 # Examples
 
@@ -51,318 +96,206 @@ dv = rand(Geometry(polygon_lookup))
 only(dv[Geometry(Contains(GO.centroid(polygons[88])))]) == dv[88] # true
 ```
 """
-struct GeometryLookup{T,A<:AbstractVector{T},D,M<:GO.Manifold,Tree,CRS} <: DD.Dimensions.Lookup{T, 1}
+struct GeometryLookup{T,A<:AbstractVector{T},D,M<:GO.Manifold,Tree<:Union{Nothing,SpatialIndex},CRS,Me} <: DD.Dimensions.MultiDimensionalLookup{T}
     manifold::M
     data::A
     tree::Tree
     dims::D
     crs::CRS
+    metadata::Me
 end
-function GeometryLookup(data, dims=(DD.X(), DD.Y()); geometrycolumn=nothing, crs=nokw, tree=nokw)
-    # First, retrieve the geometries - from a table, vector of geometries, etc.
-    geometries = GOCore.get_geometries(data; geometrycolumn)
-    geometries = Missings.disallowmissing(geometries)
-
+function GeometryLookup(
+        data, dims=(DD.X(), DD.Y());
+        geometrycolumn=nothing, crs=nokw, tree=nokw, metadata=Lookups.NoMetadata()
+    )
+    geometries = _checked_geometries(GOCore.get_geometries(data; geometrycolumn))
     if isnokw(crs)
         crs = GI.crs(data)
-        if isnothing(crs)
+        if isnothing(crs) && !isempty(geometries)
             crs = GI.crs(first(geometries))
         end
     end
-    
-    # Check that the geometries are actually geometries
-    if any(!GI.isgeometry, geometries)
-        throw(ArgumentError("""
-        The collection passed in to `GeometryLookup` has some elements that are not geometries 
-        (`GI.isgeometry(x) == false` for some `x` in `data`).
-        """))
-    end
-    # Make sure there are only two dimensions
-    if length(dims) != 2
-        throw(ArgumentError("""
-        The `dims` argument to `GeometryLookup` must have two dimensions, but it has $(length(dims)) dimensions (`$(dims)`).
-        Please make sure that it has only two dimensions, like `(X(), Y())`.
-        """))
-    end
-    # Build the lookup accelerator tree
-    tree = if isnokw(tree)
-        SortTileRecursiveTree.STRtree(geometries)
-    elseif GO.SpatialTreeInterface.isspatialtree(tree)
-        if tree isa Type
-            tree(geometries)
-        else
-            tree
-        end
-    elseif isnothing(tree)
-        nothing
-    else
-        throw(ArgumentError("""
-        Got an argument for `tree` which is not a valid spatial tree (according to `GeometryOps.SpatialTreeInterface`)
-        nor `nokw` or `nothing`
-
-        Type is $(typeof(tree))
-        """))
-    end
-    # TODO: auto manifold detection and best tree type for that manifold
-    GeometryLookup(GO.Planar(), geometries, tree, dims, crs)
+    return GeometryLookup(GO.Planar(), geometries, _spatialindex(tree, geometries), _checked_dims(dims), crs, metadata)
 end
+
+function _checked_geometries(geometries)
+    if Missing <: eltype(geometries)
+        any(ismissing, geometries) && _missing_geometries_error(geometries)
+        geometries = Missings.disallowmissing(geometries)
+    end
+    all(GI.isgeometry, geometries) || _not_geometries_error(geometries)
+    return geometries
+end
+
+@noinline function _missing_geometries_error(geometries)
+    at = findall(ismissing, geometries)
+    throw(ArgumentError("""
+        `GeometryLookup` cannot hold `missing` geometries, but the collection has them
+        at indices $(first(at, 5))$(length(at) > 5 ? ", …" : ""). Drop or fill those rows first.
+        """))
+end
+@noinline function _not_geometries_error(geometries)
+    at = findall(!GI.isgeometry, geometries)
+    throw(ArgumentError("""
+        Every element of a `GeometryLookup` must be a GeoInterface geometry
+        (`GeoInterface.isgeometry(x) == true`), but the elements at indices
+        $(first(at, 5))$(length(at) > 5 ? ", …" : "") are not.
+        """))
+end
+
+function _checked_dims(dims)
+    based = dims isa Tuple ? DD.basedims(dims) : dims
+    ok = based isa Tuple && length(based) == 2 &&
+        count(d -> d isa DD.XDim, based) == 1 && count(d -> d isa DD.YDim, based) == 1
+    ok || throw(ArgumentError("""
+        The `dims` of a `GeometryLookup` must be one `X` and one `Y` dimension,
+        like `(X(), Y())` or `(Y(), X())`; got `$dims`.
+        """))
+    return based
+end
+
+_spatialindex(tree, geometries) = isnokw(tree) ? SpatialIndex(STR(), typeof(geometries)) : _spatialindex_error(tree)
+_spatialindex(::Nothing, geometries) = nothing
+_spatialindex(algorithm::BulkLoadAlgorithm, geometries) = SpatialIndex(algorithm, typeof(geometries))
+function _spatialindex(tree::RTree, geometries)
+    tree.data === geometries || throw(ArgumentError("""
+        A prebuilt `tree` must index the lookup's own geometry vector — for a table, its
+        geometry column — but `tree.data` is a different object. Build the tree over that
+        vector, or pass a bulk-load algorithm (`STR()`, `HPR()`, `Unsorted()`) instead.
+        """))
+    return SpatialIndex(tree)
+end
+@noinline _spatialindex_error(tree) = throw(ArgumentError("""
+    `tree` must be one of: not given (a lazily built `STR()` tree), `nothing` (no
+    accelerator), a `GeometryOps.FlexibleRTrees` bulk-load algorithm (`STR()`, `HPR()`,
+    `Unsorted()`), or a prebuilt `GeometryOps.FlexibleRTrees.RTree`; got a `$(typeof(tree))`.
+    """))
+
+_fresh(::Nothing, geometries) = nothing
+_fresh(index::SpatialIndex, geometries) = SpatialIndex(index.algorithm, typeof(geometries))
+
+"""
+    spatialtree(l::GeometryLookup)
+
+The spatial tree accelerating queries on `l`, or `nothing` when `l` was
+constructed with `tree = nothing` or is empty.
+
+The tree is built on the first call and cached in the lookup; slicing,
+`view`, `reverse` and `rebuild` with new geometries never build one.
+"""
+spatialtree(l::GeometryLookup) = _spatialtree(l.tree, parent(l))
+_spatialtree(::Nothing, geometries) = nothing
+function _spatialtree(index::SpatialIndex, geometries)
+    isempty(geometries) && return nothing
+    tree = _builttree(index)
+    isnothing(tree) || return tree
+    return lock(index.lock) do
+        built = _builttree(index)
+        isnothing(built) || return built
+        new_tree = _buildtree(index.algorithm, geometries)
+        @atomic :release index.tree = new_tree
+        return new_tree
+    end
+end
+
+# The tree of an index that has already been built, without ever building one.
+_builttree(l::GeometryLookup) = _builttree(l.tree)
+_builttree(::Nothing) = nothing
+_builttree(index::SpatialIndex) = @atomic :acquire index.tree
 
 GI.crs(l::GeometryLookup) = l.crs
-RA.setcrs(l::GeometryLookup, crs) = DD.rebuild(l; crs)
+# Rasters reaches a lookup through `setcrs(dim::Dimension, crs)`, which passes the
+# dimension it came from as a keyword.
+RA.setcrs(l::GeometryLookup, crs; dim=nothing) = DD.rebuild(l; crs)
 
-# To reproject a GeometryLookup, you need to reproject the underlying geometry.
+# Needs Proj.jl loaded, like `GeometryOps.reproject` itself.
 function RA.reproject(target::RA.GeoFormat, l::GeometryLookup)
-    isnothing(l.crs) && throw(ArgumentError("Cannot reproject a `GeometryLookup` with no crs. Set one first with `setcrs`."))
-    new_data = GO.reproject(l.data; source_crs=l.crs, target_crs=target, always_xy=true)
-    return DD.rebuild(l; data=new_data, crs=target)
+    isnothing(GI.crs(l)) && throw(ArgumentError(
+        "Cannot reproject a `GeometryLookup` with no crs. Set one first with `Rasters.setcrs`."
+    ))
+    geometries = GO.reproject(parent(l); source_crs=GI.crs(l), target_crs=target)
+    return DD.rebuild(l; data=geometries, crs=target)
 end
 
-#=
-
-## DD methods for the lookup
-
-Here we define DimensionalData's methods for the lookup.
-This is broadly standard except for the `rebuild` method, which is used to update the tree accelerator when the data changes.
-=#
+# DimensionalData interface
 
 DD.dims(l::GeometryLookup) = l.dims
-# This has to return itself
-# DD.dims(d::DD.Dimension{<:GeometryLookup}) = dims(val(d))
+DD.dims(d::DD.Dimension{<:GeometryLookup}) = DD.dims(DD.val(d))
 DD.order(::GeometryLookup) = Lookups.Unordered()
-DD.parent(lookup::GeometryLookup) = lookup.data
-# TODO: format for geometry lookup
-DD.Dimensions.format(l::GeometryLookup, D::Type, values, axis::AbstractRange) = l
+DD.parent(l::GeometryLookup) = l.data
+Lookups.metadata(l::GeometryLookup) = l.metadata
+# `format` rebuilds a lookup from its values, which cannot recover the internal dims
+# or the spatial index; a `GeometryLookup` is complete as constructed.
+DD.Dimensions.format(l::GeometryLookup, ::Type, values, axis::AbstractRange) = l
 
-# Make sure that the tree is rebuilt if the data changes
 function DD.rebuild(
-        lookup::GeometryLookup; 
-        data=lookup.data, tree=nokw, 
-        dims=lookup.dims, crs=nokw, 
-        manifold=nokw, metadata=nokw
+        l::GeometryLookup;
+        data=l.data, tree=nokw, dims=l.dims, crs=nokw, manifold=l.manifold, metadata=l.metadata
     )
-    # TODO: metadata support for geometry lookup
-    new_tree = if isnokw(tree)
-        if data == lookup.data
-            lookup.tree
-        elseif isempty(data)
-            nothing
-        else
-            SortTileRecursiveTree.STRtree(data)
-        end
-    elseif GO.SpatialTreeInterface.isspatialtree(tree)
-        if tree isa Type
-            tree(data)
-        else
-            tree
-        end
+    index = if isnokw(tree)
+        data === l.data ? l.tree : _fresh(l.tree, data)
     else
-        SortTileRecursiveTree.STRtree(data)
+        _spatialindex(tree, data)
     end
     new_crs = if isnokw(crs)
         data_crs = GI.crs(data)
-        if isnothing(data_crs)
-            lookup.crs
-        else
-            data_crs
-        end
+        isnothing(data_crs) ? l.crs : data_crs
     else
         crs
     end
-
-    new_manifold = isnokw(manifold) ? lookup.manifold : manifold
-
-    return GeometryLookup(new_manifold, Missings.disallowmissing(data), new_tree, dims, new_crs)
+    new_dims = dims === l.dims ? dims : _checked_dims(dims)
+    return GeometryLookup(manifold, data, index, new_dims, new_crs, metadata)
 end
 
-# # Bounds - get the bounds of the lookup
-# function Lookups.bounds(lookup::GeometryLookup)
-#     if isempty(lookup.data)
-#         Extents.Extent(NamedTuple{DD.name.(lookup.dims)}(ntuple(2) do i; (nothing, nothing); end))
-#     else
-#         if isnothing(lookup.tree)
-#             mapreduce(GI.extent, Extents.union, lookup.data)
-#         else
-#             GI.extent(lookup.tree)
-#         end
-#     end
-# end
+Base.reverse(l::GeometryLookup) = DD.rebuild(l; data=reverse(parent(l)))
 
-# Return an `Int` or Vector{Bool}
-# Base case: got a standard index that can go into getindex on a base Array
-Lookups.selectindices(lookup::GeometryLookup, sel::Lookups.StandardIndices) = sel
-# other cases: 
-# - decompose selectors
-function Lookups.selectindices(lookup::GeometryLookup, sel::DD.DimTuple)
-    DD.selectindices(lookup, map(_val_or_nothing, DD.sortdims(sel, DD.dims(lookup))))
-end
-function Lookups.selectindices(lookup::GeometryLookup, sel::NamedTuple{K}) where K
-    dimsel = map(DD.rebuild, map(DD.name2dim, K), DD.values(sel))
-    DD.selectindices(lookup, dimsel) 
-end
-function Lookups.selectindices(lookup::GeometryLookup, sel::Tuple)
-    if (length(sel) == length(DD.dims(lookup))) && all(map(s -> s isa At, sel))
-        i = findfirst(x -> all(map(DD.Dimensions._matches, sel, x)), lookup)
-        isnothing(i) && _coord_not_found_error(sel)
-        return i
-    else
-        return [DD.Dimensions._matches(sel, x) for x in lookup]
-    end
-end
-function Lookups.selectindices(lookup::GeometryLookup, sel::DD.Lookups.Contains)
-    sel_ext = GI.extent(val(sel))
-    potential_candidates = _maybe_get_candidates(lookup, sel_ext)
-    filter(potential_candidates) do candidate
-        GO.contains(lookup.data[candidate], val(sel))
-    end
-end
-function Lookups.selectindices(lookup::GeometryLookup, sel::DD.Lookups.At)
-    geom = val(sel)
-    @assert GI.isgeometry(geom)
-    candidates = _maybe_get_candidates(lookup, GI.extent(geom))
-    x = findfirst(candidates) do candidate
-        GO.equals(geom, lookup.data[candidate])
-    end
-    if isnothing(x)
-        throw(ArgumentError("$sel not found in lookup"))
-    else
-        return candidates[x]
-    end
-end
-function Lookups.selectindices(lookup::GeometryLookup, sel::DD.Lookups.Near)
-    geom = val(sel)
-    @assert GI.isgeometry(geom)
-    # TODO: temporary
-    @assert GI.trait(geom) isa GI.PointTrait "Only point geometries are supported for the near lookup at this point!  We will add more geometry support in the future."
+Lookups._set_lookup(::Lookups.Safety, ::Lookups.Lookup, new::GeometryLookup) = new
+# `set(cube, Geometry => geometries)` replaces the lookup values; check them as the
+# constructor does, so a lookup can never come to hold `missing` or a non-geometry.
+Lookups._set_lookup_parent(::Lookups.Safe, l::GeometryLookup, values::AbstractVector) =
+    DD.rebuild(l; data=_checked_geometries(values))
+Lookups._set_lookup_parent(::Lookups.Safe, l::GeometryLookup, ::Lookups.AutoValues) = l
 
-    # Get the nearest geometry
-    # TODO: this sucks!  Use some branch and bound algorithm
-    # on the spatial tree instead.
-    # if pointtrait
-    return findmin(x -> GO.distance(geom, x), lookup.data)[2]
-    # else
-    #     findmin(x -> GO.distance(GO.GEOS(), geom, x), lookup.data)[2]
-    # end 
-    # this depends on LibGEOS being installed.
+function Lookups.bounds(l::GeometryLookup)
+    ext = _extent(l)
+    return map(d -> _dimbounds(ext, d), DD.dims(l))
+end
+_dimbounds(::Nothing, ::DD.Dimension) = (nothing, nothing)
+_dimbounds(ext::Extents.Extent, ::DD.XDim) = ext.X
+_dimbounds(ext::Extents.Extent, ::DD.YDim) = ext.Y
 
-end
-function Lookups.selectindices(lookup::GeometryLookup, sel::DD.Lookups.Touches)
-    sel_ext = GI.extent(val(sel))
-    potential_candidates = _maybe_get_candidates(lookup, sel_ext)
-    return filter(potential_candidates) do candidate
-        GO.intersects(lookup.data[candidate], val(sel))
-    end
-end
-function Lookups.selectindices(
-    lookup::GeometryLookup, 
-    (xs, ys)::Tuple{Union{<:DD.Lookups.Touches}, Union{<:DD.Lookups.Touches}}
-)
-    target_ext = Extents.Extent(X = (first(xs), last(xs)), Y = (first(ys), last(ys)))
-    potential_candidates = _maybe_get_candidates(lookup, target_ext)
-    return filter(potential_candidates) do candidate
-        GO.intersects(lookup.data[candidate], target_ext)
-    end
-end
-function Lookups.selectindices(
-    lookup::GeometryLookup, 
-    (xs, ys)::Tuple{Union{<:DD.IntervalSets.ClosedInterval},Union{<:DD.IntervalSets.ClosedInterval}}
-)
-    target_ext = Extents.Extent(X = extrema(xs), Y = extrema(ys))
-    potential_candidates = _maybe_get_candidates(lookup, target_ext)
-    filter(potential_candidates) do candidate
-        GO.covers(target_ext, lookup.data[candidate])
-    end
-end
-function Lookups.selectindices(
-    lookup::GeometryLookup, 
-    (x, y)::Tuple{Union{<:DD.Lookups.At,<:DD.Lookups.Contains}, Union{<:DD.Lookups.At,<:DD.Lookups.Contains}}
-)
-    xval, yval = val(x), val(y)
-    # `At` requires an exact match, so a point matching no geometry is an error;
-    # `Contains` just returns the (possibly empty) set of matches.
-    is_at = x isa DD.Lookups.At && y isa DD.Lookups.At
-    potential_candidates = if isnothing(lookup.tree)
-        collect(eachindex(lookup.data))
-    else
-        # The tree query already rejects points outside the root node's
-        # extent, so no separate extent check is needed here.
-        GO.SpatialTreeInterface.query(lookup.tree, (xval, yval))
-    end
-    if is_at
-        # If both selectors are At(), return a single index (first match) for speed and clarity
-        for candidate in potential_candidates
-            if GO.contains(lookup.data[candidate], (xval, yval))
-                return candidate
-            end
-        end
-        throw(ArgumentError("Point ($xval, $yval) not found in lookup"))
-    else
-        # For Contains selectors, return all matching indices
-        filter(potential_candidates) do candidate
-            GO.contains(lookup.data[candidate], (xval, yval))
-        end
-    end
+function _extent(l::GeometryLookup)
+    geometries = parent(l)
+    isempty(geometries) && return nothing
+    tree = _builttree(l)
+    isnothing(tree) || return Extents.extent(tree)
+    # `_xyextent`, like the tree's own extent, so bounds do not change once it is built.
+    return mapreduce(_xyextent, Extents.union, geometries)
 end
 
-for fname in (:equals, :intersects, 
-                :contains, :within, :covers, 
-                :coveredby, :touches)
-    @eval begin
-        function Lookups.selectindices(lookup::GeometryLookup, sel::DD.Lookups.Where{Base.Fix2{typeof(GO.$fname)}})
-            sel_ext = GI.extent(val(sel).x)
-            potential_candidates = _maybe_get_candidates(lookup, sel_ext)
-            f = val(sel)
-            return filter(potential_candidates) do idx
-                f(lookup.data[idx])
-            end
-        end
-    end
+function Base.:(==)(a::GeometryLookup, b::GeometryLookup)
+    a === b && return true
+    return DD.name(DD.dims(a)) == DD.name(DD.dims(b)) && GI.crs(a) == GI.crs(b) &&
+        (parent(a) === parent(b) || parent(a) == parent(b))
 end
-# Disjoint needs a specialized implementation, which will look at intersects instead.
-function Lookups.selectindices(lookup::GeometryLookup, sel::DD.Lookups.Where{Base.Fix2{typeof(GO.disjoint)}})
-    sel_ext = GI.extent(val(sel).x)
-    potential_candidates = _maybe_get_candidates(lookup, sel_ext, Extents.intersects)
-    f = val(sel)
-    actual_intersections = filter(potential_candidates) do idx
-        f(lookup.data[idx])
-    end
-    return setdiff(1:length(lookup.data), actual_intersections)
+function Base.isequal(a::GeometryLookup, b::GeometryLookup)
+    a === b && return true
+    return isequal(DD.name(DD.dims(a)), DD.name(DD.dims(b))) && isequal(GI.crs(a), GI.crs(b)) &&
+        (parent(a) === parent(b) || isequal(parent(a), parent(b)))
 end
+Base.hash(l::GeometryLookup, h::UInt) =
+    hash(parent(l), hash(GI.crs(l), hash(DD.name(DD.dims(l)), hash(:GeometryLookup, h))))
 
-@inline Lookups.reducelookup(l::GeometryLookup) = Lookups.NoLookup(Base.OneTo(1))
+@inline Lookups.reducelookup(::GeometryLookup) = Lookups.NoLookup(Base.OneTo(1))
 
-function Lookups.show_properties(io::IO, mime, lookup::GeometryLookup)
+function Lookups.show_compact(io::IO, mime, l::GeometryLookup)
+    print(io, "GeometryLookup{", _elname(eltype(l)), "}")
+end
+# Sorted, so the header does not depend on the order Julia happens to store a union in.
+_elname(T::Union) = string("Union{", join(sort!(map(string ∘ _elname, Base.uniontypes(T))), ", "), "}")
+_elname(T::Type) = nameof(T)
+
+function Lookups.show_properties(io::IO, mime, l::GeometryLookup)
     print(io, " ")
-    show(IOContext(io, :inset => "", :dimcolor => 244), mime, DD.basedims(lookup))
+    show(IOContext(io, :inset => "", :dimcolor => 244), mime, DD.basedims(l))
 end
-
-# Dimension methods
-
-@inline _reducedims(lookup::GeometryLookup, dim::DD.Dimension) =
-    DD.rebuild(dim, [map(x -> zero(x), dim.val[1])])
-
-function DD.format(dim::DD.Dimension{<:GeometryLookup}, axis::AbstractRange)
-    # checkaxis(dim, axis)
-    return dim
-end
-
-# Local functions
-_val_or_nothing(::Nothing) = nothing
-_val_or_nothing(d::DD.Dimension) = val(d)
-
-# Get the candidates for the selector extent.  
-# If the selector extent is disjoint from the tree rootnode extent,
-# you should raise an error.  We should have an error type that can be
-# plotted etc. to allow debugging and understanding.
-function _maybe_get_candidates(lookup::GeometryLookup, selector_extent, operation::O) where O
-    tree = lookup.tree
-    isnothing(tree) && return 1:length(lookup)
-    Extents.disjoint(GI.extent(tree), selector_extent) && return Int[]
-    potential_candidates = GO.SpatialTreeInterface.query(
-        tree,
-        Base.Fix1(operation, selector_extent)
-    )
-    isempty(potential_candidates) && return Int[]
-    return potential_candidates
-end
-
-_maybe_get_candidates(lookup::GeometryLookup, selector_extent) = _maybe_get_candidates(lookup, selector_extent, Extents.intersects)

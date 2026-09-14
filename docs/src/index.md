@@ -19,7 +19,7 @@ hero:
 
 features:
   - title: Spatial selectors
-    details: Index a cube by geometry — cube[Geometry(Contains(point))], or plain X(a..b), Y(c..d) on the same axis — narrowed by an STRtree and refined by exact GeometryOps predicates.
+    details: Index a cube by geometry — cube[Geometry(Contains(point))], or plain X(a..b), Y(c..d) on the same axis — narrowed by an R-tree and refined by exact GeometryOps predicates.
   - title: Zonal statistics → cubes
     details: VectorDataCubes.zonal aggregates a raster over geometries into a (Ti, Geometry) cube you can keep slicing spatially.
   - title: Tables ↔ cubes
@@ -31,10 +31,10 @@ features:
 
 A **vector data cube** is a [DimensionalData](https://github.com/rafaqz/DimensionalData.jl) /
 [Rasters](https://github.com/rafaqz/Rasters.jl) array or stack whose `Geometry`
-dimension is backed by a [`GeometryLookup`](@ref) — a vector of geometries plus an
-STRtree spatial index. You get everything DimensionalData and Rasters already give
-you (named dimensions, selectors, broadcasting, table conversion), **plus** spatial
-indexing on the geometry axis:
+dimension is backed by a [`GeometryLookup`](@ref) — a vector of geometries plus a
+packed R-tree spatial index (`GeometryOps.FlexibleRTrees`). You get everything
+DimensionalData and Rasters already give you (named dimensions, selectors,
+broadcasting, table conversion), **plus** spatial indexing on the geometry axis:
 
 ```julia
 cube[Geometry(Contains(point))]   # the geometry that contains a point
