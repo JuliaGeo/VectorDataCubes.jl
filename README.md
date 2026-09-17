@@ -62,7 +62,9 @@ transform query geometries to the same CRS before selecting.
 ## Tables and attributes
 
 `vectordatacube` turns each attribute column into a layer over a shared geometry
-axis. Using the geometries above:
+axis.  You can go the other direction using `vectordatacubetable`.
+
+Using the geometries above:
 
 ```julia
 table = (geometry = geometries, region = ["West", "East"], population = [100, 200])
@@ -72,15 +74,17 @@ selected = attributes[Geometry(Contains((2.5, 0.5)))]
 only(selected[:region])      # "East"
 only(selected[:population])  # 200
 
-import Tables
-columns = Tables.columntable(vectordatacubetable(cube))
+using DataFrames
+columns = DataFrame(vectordatacubetable(cube))
 length(columns.Geometry)    # 4: one row per region and year
 ```
 
 Use `geometrycolumn = :geom` for a differently named geometry column, and
-`layers = (:population,)` to keep only selected attributes. Table output contains
-the actual geometry objects in a `Geometry` column. `vectordatacubetable` also
-records the geometry CRS, when present, in its parent cube's metadata.
+`layers = (:population,)` to keep only selected attributes. 
+
+Table output contains the actual geometry objects in a `Geometry` column. 
+`vectordatacubetable` also records the geometry CRS, when present, in 
+its parent cube's metadata.
 
 ## Zonal statistics
 
