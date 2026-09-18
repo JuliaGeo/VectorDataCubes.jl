@@ -19,9 +19,9 @@ makedocs(;
     modules = [VectorDataCubes],
     authors = "Anshul Singhvi <anshulsinghvi@gmail.com> and contributors",
     sitename = "VectorDataCubes.jl",
-    repo = "https://github.com/asinghvi17/VectorDataCubes.jl",
+    repo = "https://github.com/JuliaGeo/VectorDataCubes.jl",
     format = DocumenterVitepress.MarkdownVitepress(
-        repo = "https://github.com/asinghvi17/VectorDataCubes.jl",
+        repo = "https://github.com/JuliaGeo/VectorDataCubes.jl",
         devbranch = "main",
         devurl = "dev",
     ),
@@ -34,7 +34,7 @@ makedocs(;
 )
 
 DocumenterVitepress.deploydocs(;
-    repo = "github.com/asinghvi17/VectorDataCubes.jl",
+    repo = "github.com/JuliaGeo/VectorDataCubes.jl",
     devbranch = "main",
     push_preview = true,
 )
