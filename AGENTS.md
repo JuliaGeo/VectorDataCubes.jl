@@ -74,7 +74,8 @@ avoids re-paying Julia's per-process compile latency on every run.
 - **The manifold governs indexing and predicates.** Planar is the default; spherical
   lookups accept longitude/latitude geometries, use RelateNG for crosses/overlaps, and
   interpret finite interval boxes as great-circle polygons. Spherical `Near` currently
-  scans point lookups only. Spherical zonal statistics and reprojection are unsupported.
+  supports point lookups, with XYZ chord bounds for tree pruning. Spherical zonal
+  statistics and reprojection are unsupported.
   CRS remains independent; datum-to-radius resolution is future work.
 - **The tree is lazy.** `spatialtree(lookup)` builds it on the first spatial query and
   caches it; slicing, `view`, `reverse` and `DD.rebuild` with new data hand back an

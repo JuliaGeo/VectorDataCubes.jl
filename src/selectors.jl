@@ -278,17 +278,17 @@ function _nearest(lookup::GeometryLookup, point)
         all(_ispoint, geoms) || throw(ArgumentError(
             "Spherical Near currently supports point lookups only; GeometryOps needs general spherical distance first."
         ))
-        return last(findmin(g -> GO.distance(lookup.manifold, point, g), geoms))
+        point = _unitpoint(_querygeometry(lookup.manifold, point))
     end
     tree = spatialtree(lookup)
-    isnothing(tree) && return last(findmin(g -> GO.distance(point, g), geoms))
+    isnothing(tree) && return last(findmin(g -> _nearest_distance(point, g), geoms))
     return first(_nearest(tree, point, geoms, 0, Inf))::Int
 end
 function _nearest(node, point, geoms, best_i, best_d)
     if STI.isleaf(node)
         for (i, ext) in STI.child_indices_extents(node)
             _extent_distance(point, ext) <= best_d || continue
-            d = GO.distance(point, geoms[i])
+            d = _nearest_distance(point, geoms[i])
             if d < best_d || (d == best_d && i < best_i)
                 best_i, best_d = i, d
             end
@@ -303,12 +303,27 @@ function _nearest(node, point, geoms, best_i, best_d)
     end
     return best_i, best_d
 end
+
+_nearest_distance(point, geom) = GO.distance(point, geom)
+_unitpoint(point) = GO.UnitSpherical.UnitSphericalPoint((Float64(GI.x(point)), Float64(GI.y(point))))
+# Radius is common to the lookup, so angular distance preserves nearest ordering.
+_nearest_distance(point::GO.UnitSpherical.UnitSphericalPoint, geom) =
+    GO.UnitSpherical.spherical_distance(point, _unitpoint(geom))
+
 function _extent_distance(point, ext::Extents.Extent)
     x, y = GI.x(point), GI.y(point)
     (xmin, xmax), (ymin, ymax) = ext.X, ext.Y
     dx = max(xmin - x, zero(x), x - xmax)
     dy = max(ymin - y, zero(y), y - ymax)
     return hypot(dx, dy)
+end
+function _extent_distance(point::GO.UnitSpherical.UnitSphericalPoint, ext::Extents.Extent)
+    dx = max(ext.X[1] - point.x, 0.0, point.x - ext.X[2])
+    dy = max(ext.Y[1] - point.y, 0.0, point.y - ext.Y[2])
+    dz = max(ext.Z[1] - point.z, 0.0, point.z - ext.Z[2])
+    # Unit XYZ boxes give a chord lower bound; round down before converting to angle.
+    chord = max(0.0, hypot(dx, dy, dz) - 16eps(Float64))
+    return 2asin(min(chord / 2, 1.0))
 end
 
 """
