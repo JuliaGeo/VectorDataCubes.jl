@@ -1,6 +1,5 @@
 using Test
 using VectorDataCubes
-using VectorDataCubes: extract
 
 using Rasters, DimensionalData
 using Rasters.Lookups
@@ -10,6 +9,7 @@ import GeoInterface as GI
 import GeometryOps as GO
 import Tables
 import Proj
+import DataAPI
 
 const USP = GO.UnitSpherical.UnitSphericalPoint
 usp(point) = USP(point)
@@ -27,6 +27,9 @@ Tables.getcolumn(table::USPTable, name::Symbol) = getfield(table, name)
 Tables.getcolumn(table::USPTable, i::Int) = Tables.getcolumn(table, Tables.columnnames(table)[i])
 GI.geometrycolumns(::USPTable) = (:geometry,)
 GI.crs(table::USPTable) = table.crs
+DataAPI.colmetadatasupport(::Type{<:USPTable}) = (read=true, write=false)
+DataAPI.colmetadata(::USPTable, col, key, default) =
+    col == :geometry && key == "edges" ? "spherical" : default
 
 @testset "UnitSpherical input is stored as longitude/latitude" begin
     sphere = GO.Spherical()
@@ -37,6 +40,9 @@ GI.crs(table::USPTable) = table.crs
     @test all(p -> length(p) == 2, parent(lookup))
     @test all(isapprox.(parent(lookup)[1], (179.0, 0.0)))
     @test GI.crs(lookup) === nothing
+    bare = GeometryLookup(first(points); manifold=sphere)
+    @test GI.crs(bare) === nothing
+    @test parent(bare) == parent(lookup)[1:1]
 
     explicit = GeometryLookup(points; manifold=sphere, crs=EPSG(4326))
     @test GI.crs(explicit) == EPSG(4326)
@@ -86,7 +92,7 @@ end
     raster = Raster(reshape(1.0:4.0, 2, 2),
         (X(Sampled(0.5:1.0:1.5; sampling=Intervals(Center()))),
          Y(Sampled(0.5:1.0:1.5; sampling=Intervals(Center())))))
-    sampled = extract(raster, points; manifold=sphere, crs=EPSG(4326))
+    sampled = VectorDataCubes.extract(raster, points; manifold=sphere, crs=EPSG(4326))
     @test collect(sampled) == [1.0, 4.0]
     @test DD.lookup(sampled, Geometry).manifold == sphere
     @test all(p -> !(p isa USP), parent(DD.lookup(sampled, Geometry)))
@@ -105,4 +111,27 @@ end
     @test occursin("geographic CRS", err.msg)
     corrected = vectordatacube(cartesian; manifold=sphere, crs=EPSG(4326))
     @test GI.crs(DD.lookup(corrected, Geometry)) == EPSG(4326)
+end
+
+@testset "USP normalization precedes datum inference" begin
+    points = usp.([(1.0, 2.0), (3.0, 4.0)])
+    customcrs = ProjString("+proj=longlat +R=1234567.89 +type=crs")
+    table = USPTable(points, [1, 2], customcrs)
+    for lookup in (GeometryLookup(table), DD.lookup(vectordatacube(table), Geometry))
+        @test lookup.manifold.radius == 1234567.89
+        @test GI.crs(lookup) == customcrs
+        @test all(p -> !(p isa USP), parent(lookup))
+        emitted = vectordatacubetable(Raster([1, 2], Geometry(lookup); name=:value))
+        @test GI.crs(emitted) == customcrs
+        @test DD.lookup(vectordatacube(emitted), Geometry).manifold == lookup.manifold
+    end
+
+    plain = (geometry=points, value=[1, 2])
+    lookup = DD.lookup(vectordatacube(plain; manifold=GO.Spherical()), Geometry)
+    @test GI.crs(lookup) === nothing
+    @test all(p -> !(p isa USP), parent(lookup))
+
+    inferred = DD.lookup(vectordatacube(USPTable(points, [1, 2], nothing)), Geometry)
+    @test GI.crs(inferred) === nothing
+    @test inferred.manifold == GO.Spherical()
 end

@@ -1,8 +1,8 @@
 # Spherical geometry plan
 
-VectorDataCubes will use a lookup's manifold consistently for its spatial index
-and exact predicates. Public geometries remain in their input coordinates;
-unit-sphere XYZ bounds and prepared geometries are internal accelerators.
+VectorDataCubes uses a lookup's manifold consistently for its spatial index
+and exact predicates. Public spherical geometries use longitude/latitude;
+unit-sphere XYZ bounds are internal accelerators.
 
 ## Agreed design
 
@@ -30,7 +30,7 @@ unit-sphere XYZ bounds and prepared geometries are internal accelerators.
 - Normalize `UnitSphericalPoint` input and queries back to public longitude/latitude
   coordinates at the lookup boundary.
 
-## Small first cut
+## Implementation layers
 
 1. Add explicit manifold construction and preservation, XY/XYZ lazy indexing,
    manifold-aware predicates, and finite geodesic interval selection.

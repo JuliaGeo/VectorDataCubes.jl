@@ -72,7 +72,7 @@ avoids re-paying Julia's per-process compile latency on every run.
 - **The lookup spans `(X(), Y())` *and* the `Geometry` dim wrapping it** — that's why both
   `Geometry(...)` and `X()/Y()` selectors work on one axis.
 - **The manifold governs indexing and predicates.** Planar is the default; spherical
-  lookups accept longitude/latitude geometries, use RelateNG for crosses/overlaps, and
+  lookups normalize USP input to longitude/latitude, use RelateNG for crosses/overlaps, and
   interpret finite interval boxes as great-circle polygons. Spherical `Near` currently
   supports point lookups, with XYZ chord bounds for tree pruning. Spherical zonal
   statistics and reprojection are unsupported.
@@ -85,7 +85,7 @@ avoids re-paying Julia's per-process compile latency on every run.
   `Float64` XY (planar) or unit-sphere XYZ (spherical) extents with a `Vector{Int}`
   of leaf indices. Its concrete type follows from the lookup's manifold, algorithm,
   and geometry vector type. Changing manifold also invalidates the index; public
-  dimension bounds always remain in the input coordinates.
+  dimension bounds always remain in the public coordinates.
 - **`zonal` and `extract` are package-owned, not methods of the Rasters ones** (Rasters
   can't dispatch on `zonal`'s `of`, and its `extract` returns rows), and not exported
   (call them qualified). A `GeometryLookup` `of` yields a cube; anything else forwards to

@@ -132,7 +132,10 @@ function GeometryLookup(
         data, dims=(DD.X(), DD.Y());
         geometrycolumn=nothing, crs=nokw, manifold=nokw, tree=nokw, metadata=Lookups.NoMetadata()
     )
-    geometries = _checked_geometries(GOCore.get_geometries(data; geometrycolumn))
+    # USP is also an AbstractVector; get_geometries otherwise returns its XYZ components.
+    geometries = data isa GO.UnitSpherical.UnitSphericalPoint ? [data] :
+        GOCore.get_geometries(data; geometrycolumn)
+    geometries = _checked_geometries(geometries)
     infer_manifold = isnokw(manifold)
     infer_manifold && (manifold = _inputmanifold(data, geometrycolumn))
     _checkmanifold(manifold)
