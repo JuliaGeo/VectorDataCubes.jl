@@ -26,9 +26,10 @@ geometries to GeometryBasics and forwarding to Makie's `poly`/`lines`/`scatter` 
 Its `convert_arguments`/`plottype` methods name the lookup type, which is more specific
 than the `AbstractArray{<:SomeGeometry}` methods the geometry packages install through
 `GeoInterface.@enable_makie`, so one conversion covers every element type. Nothing there
-touches `DimArray`s — DimensionalData's own Makie extension owns those. Reprojection needs
-no extension: `Rasters.reproject` on a `GeometryLookup` calls `GeometryOps.reproject`, which
+touches `DimArray`s — DimensionalData's own Makie extension owns those. Planar reprojection
+needs no package extension: `Rasters.reproject` calls `GeometryOps.reproject`, which
 needs Proj.jl loaded and says so itself (a `MethodError` carrying GeometryOps' hint).
+Spherical lookup reprojection is rejected until space-conversion semantics are implemented.
 
 ## Commands
 

@@ -61,7 +61,7 @@ existing planar test suite.
 
 ## Follow-ups
 
-- General spherical distance; point lookup tree pruning is implemented using an
+- General spherical point-to-line/polygon distance. Point lookup tree pruning uses an
   XYZ-box chord lower bound and exhaustive-scan equivalence tests.
 - Explicit reprojection and spherical rasterization/zonal semantics.
 - Format-specific metadata bridges.
