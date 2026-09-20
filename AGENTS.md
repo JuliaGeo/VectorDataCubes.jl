@@ -76,7 +76,8 @@ avoids re-paying Julia's per-process compile latency on every run.
   interpret finite interval boxes as great-circle polygons. Spherical `Near` currently
   supports point lookups, with XYZ chord bounds for tree pruning. Spherical zonal
   statistics and reprojection are unsupported.
-  CRS remains independent; datum-to-radius resolution is future work.
+  CRS remains independent; the optional Proj extension derives spherical table
+  radii from the datum and validates them on table export and `setcrs`.
 - **The tree is lazy.** `spatialtree(lookup)` builds it on the first spatial query and
   caches it; slicing, `view`, `reverse` and `DD.rebuild` with new data hand back an
   unbuilt index, so the array type never depends on the number of geometries. Nothing

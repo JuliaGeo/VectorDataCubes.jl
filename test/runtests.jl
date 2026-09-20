@@ -5,6 +5,7 @@ using SafeTestsets
 # leaks in from here.
 @safetestset "construction" begin include("construction.jl") end
 @safetestset "selectors" begin include("selectors.jl") end
+@safetestset "spherical datum" begin include("spherical_datum.jl") end
 @safetestset "spherical" begin include("spherical.jl") end
 @safetestset "spherical nearest points" begin include("spherical_nearest.jl") end
 @safetestset "zonal" begin include("zonal.jl") end

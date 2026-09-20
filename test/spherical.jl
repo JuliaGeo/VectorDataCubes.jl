@@ -149,6 +149,7 @@ end
 end
 
 @testset "table edge metadata" begin
+    import Proj
     planar = GeometryLookup([far]; crs=EPSG(4326))
     spherical = GeometryLookup([dateline]; manifold=GO.Spherical(), crs=EPSG(4326))
     oriented = GeometryLookup([dateline]; manifold=GO.Spherical(oriented=true), crs=EPSG(4326))
@@ -172,7 +173,8 @@ end
 
     inherited = vectordatacube(table; geometrycolumn=:SphericalGeometry, layers=:value)
     inherited_lookup = DD.lookup(inherited, Geometry)
-    @test inherited_lookup.manifold == GO.Spherical(oriented=true)
+    @test inherited_lookup.manifold isa GO.Spherical
+    @test inherited_lookup.manifold.oriented
     @test parent(inherited_lookup) == table.SphericalGeometry
 
     overridden = vectordatacube(table; geometrycolumn=:SphericalGeometry, layers=:value,
@@ -181,7 +183,7 @@ end
 
     roundtrip = vectordatacubetable(Raster([1], (Geometry(spherical),); name=:value))
     back = vectordatacube(roundtrip)
-    @test DD.lookup(back, Geometry).manifold == GO.Spherical()
+    @test DD.lookup(back, Geometry).manifold isa GO.Spherical
     @test parent(DD.lookup(back, Geometry)) == parent(spherical)
 
     custom_radius = GeometryLookup([dateline]; manifold=GO.Spherical(radius=1.0))

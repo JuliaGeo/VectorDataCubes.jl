@@ -97,8 +97,8 @@ function DataAPI.colmetadata(t::VectorDataCubeTable, col, key::AbstractString, d
     return DataAPI.colmetadata(t, col, key; style)
 end
 
-_inputmanifold(l::GeometryLookup, geometrycolumn) = l.manifold
-function _inputmanifold(table, geometrycolumn)
+_inputmanifold(l::GeometryLookup, geometrycolumn, crs=nothing) = l.manifold
+function _inputmanifold(table, geometrycolumn, crs=nothing)
     DataAPI.colmetadatasupport(typeof(table)).read || return GO.Planar()
     col = isnothing(geometrycolumn) ? _geometrycolumn(table) : Symbol(geometrycolumn)
     edges = DataAPI.colmetadata(table, col, "edges", "planar")
@@ -107,14 +107,64 @@ function _inputmanifold(table, geometrycolumn)
     orientation in (nothing, "counterclockwise") || throw(ArgumentError(
         "Unsupported orientation metadata $(repr(orientation)) on column $col."
     ))
-    return edges == "spherical" ? GO.Spherical(; oriented=orientation == "counterclockwise") : GO.Planar()
+    edges == "planar" && return GO.Planar()
+    radius = isnothing(crs) ? GO.Spherical().radius : _spherical_radius(crs)
+    return GO.Spherical(; radius, oriented=orientation == "counterclockwise")
 end
 
-_geometrymetadata(::GO.Planar) = (; edges="planar")
-function _geometrymetadata(m::GO.Spherical)
-    m.radius == GO.Spherical().radius || throw(ArgumentError(
-        "Exporting a custom spherical radius requires CRS datum-to-radius support, which is not implemented yet."
+_crsdatum(crs) = nothing
+
+function _resolved_crsdatum(crs)
+    info = _crsdatum(crs)
+    isnothing(info) && throw(ArgumentError(
+        "Resolving the datum of CRS $(repr(crs)) requires Proj.jl. Load Proj before " *
+        "importing, exporting, or assigning a CRS to spherical geometries."
     ))
+    return info
+end
+
+function _spherical_radius(crs)
+    info = _resolved_crsdatum(crs)
+    info.kind == :geographic || throw(ArgumentError(
+        "Spherical edges require a geographic CRS, but $(repr(crs)) is projected."
+    ))
+    return info.radius
+end
+
+function _radius_matches(m::GO.Spherical, info)
+    # True-sphere radii are authoritative and must survive exactly apart from conversion
+    # roundoff. Ellipsoids use (2a+b)/3; 5 cm also accepts GeometryOps' conventional
+    # WGS84 value 6371008.8 against the unrounded mean 6371008.771... metres.
+    atol = info.sphere ? 8eps(max(abs(m.radius), abs(info.radius))) : 0.05
+    return isapprox(m.radius, info.radius; rtol=0, atol)
+end
+
+function _validate_spherical_crs(m::GO.Spherical, crs)
+    isnothing(crs) && return nothing
+    info = _resolved_crsdatum(crs)
+    info.kind == :geographic || throw(ArgumentError(
+        "Spherical edges require a geographic CRS, but $(repr(crs)) is projected."
+    ))
+    _radius_matches(m, info) || throw(ArgumentError(
+        "The spherical radius $(m.radius) disagrees with the radius $(info.radius) " *
+        "derived from CRS $(repr(crs)). Use a CRS whose datum describes this sphere."
+    ))
+    return nothing
+end
+
+_validate_manifold_crs(::GO.Planar, crs) = nothing
+_validate_manifold_crs(m::GO.Spherical, crs) = _validate_spherical_crs(m, crs)
+
+_geometrymetadata(::GO.Planar, crs) = (; edges="planar")
+function _geometrymetadata(m::GO.Spherical, crs)
+    if isnothing(crs)
+        m.radius == GO.Spherical().radius || throw(ArgumentError(
+            "A custom spherical radius cannot be preserved in table metadata without a CRS. " *
+            "Supply a geographic CRS whose datum describes the sphere."
+        ))
+    else
+        _validate_spherical_crs(m, crs)
+    end
     return m.oriented ? (; edges="spherical", orientation="counterclockwise") : (; edges="spherical")
 end
 
@@ -183,9 +233,19 @@ function vectordatacube(table; geometrycolumn=nothing, layers=nothing, crs=nokw,
     end
     if isnokw(crs)
         table_crs = GI.crs(table)
-        isnothing(table_crs) || (crs = table_crs)
+        if !isnothing(table_crs)
+            crs = table_crs
+        elseif !isempty(geometries)
+            geometry_crs = GI.crs(first(geometries))
+            isnothing(geometry_crs) || (crs = geometry_crs)
+        end
     end
-    isnokw(manifold) && (manifold = _inputmanifold(table, geomcol))
+    resolved_crs = isnokw(crs) ? nothing : crs
+    if isnokw(manifold)
+        manifold = _inputmanifold(table, geomcol, resolved_crs)
+    else
+        _validate_manifold_crs(manifold, resolved_crs)
+    end
     gl = GeometryLookup(geometries; crs, manifold)
     layernames = _layernames(layers, colnames, geomcol)
     gdim = Geometry(gl)
@@ -254,8 +314,8 @@ Each geometry column carries DataAPI `"edges"` (`"planar"` or `"spherical"`) met
 `Spherical(oriented=true)` also emits `"orientation" => "counterclockwise"`, asserting
 the supplied ring convention; other lookups omit it. Coordinates remain unchanged.
 File writers must explicitly translate these keys to their own format metadata.
-Export of a custom spherical radius is unsupported until CRS datum-to-radius
-resolution is implemented; its physical parameters belong in the CRS.
+A custom spherical radius is exported only when the supplied CRS describes the
+same sphere; its physical parameters belong in the CRS.
 """
 function vectordatacubetable(cube::Union{DD.AbstractDimArray,DD.AbstractDimStack})
     geomdims = filter(d -> DD.lookup(d) isa GeometryLookup, (DD.dims(cube)..., DD.refdims(cube)...))
@@ -265,8 +325,11 @@ function vectordatacubetable(cube::Union{DD.AbstractDimArray,DD.AbstractDimStack
     Wrap your geometries in a `Geometry(GeometryLookup(geoms))` axis first.
     """))
     cols = map(DD.name, geomdims)
-    columnmetadata = NamedTuple{cols}(map(d -> _geometrymetadata(DD.lookup(d).manifold), geomdims))
-    return VectorDataCubeTable(DD.DimTable(cube), cols, _shared_crs(geomdims), columnmetadata)
+    crs = _shared_crs(geomdims)
+    columnmetadata = NamedTuple{cols}(map(
+        d -> _geometrymetadata(DD.lookup(d).manifold, crs), geomdims
+    ))
+    return VectorDataCubeTable(DD.DimTable(cube), cols, crs, columnmetadata)
 end
 
 function _shared_crs(geomdims)

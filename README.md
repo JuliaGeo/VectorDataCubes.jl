@@ -74,12 +74,18 @@ remain longitude/latitude. Finite `X`/`Y` interval boxes become polygons with
 great-circle edges. This first cut accepts longitude widths below 180 degrees
 and latitude bounds strictly between the poles; pass a geometry for other regions.
 Spherical `Near` supports point lookups, using the XYZ tree when enabled and an
-exhaustive scan with `tree=nothing`. Spherical zonal statistics, reprojection,
-and automatic CRS/datum resolution remain follow-ups.
+exhaustive scan with `tree=nothing`. Spherical zonal statistics and reprojection
+remain follow-ups. When Proj is loaded, spherical table input derives its radius
+from the CRS datum: a declared sphere keeps its radius and an ellipsoid uses
+`(2a+b)/3`. The `edges` metadata still selects spherical behavior independently.
 
 Table conversion preserves `GEOINTERFACE:crs` and `GEOINTERFACE:geometrycolumns`,
 plus per-column DataAPI `edges` and `orientation` metadata using GeoParquet
-semantics. Absent `edges` means planar. See the [spherical implementation plan](docs/src/spherical-plan.md).
+semantics. Absent `edges` means planar. A custom radius can round-trip only with a
+CRS that describes the same sphere; VectorDataCubes never invents or relabels one.
+An explicit lookup manifold remains authoritative in memory; table conversion
+and `setcrs` require Proj to validate a supplied CRS against its radius.
+See the [spherical implementation plan](docs/src/spherical-plan.md).
 
 ## Tables and attributes
 
