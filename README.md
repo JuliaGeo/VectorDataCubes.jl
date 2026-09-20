@@ -73,7 +73,8 @@ The lazy index uses unit-sphere XYZ bounds while stored and emitted geometries
 remain longitude/latitude. Finite `X`/`Y` interval boxes become polygons with
 great-circle edges. This first cut accepts longitude widths below 180 degrees
 and latitude bounds strictly between the poles; pass a geometry for other regions.
-Spherical `Near` supports point lookups. Spherical zonal statistics, reprojection,
+Spherical `Near` supports point lookups, using the XYZ tree when enabled and an
+exhaustive scan with `tree=nothing`. Spherical zonal statistics, reprojection,
 and automatic CRS/datum resolution remain follow-ups.
 
 Table conversion preserves `GEOINTERFACE:crs` and `GEOINTERFACE:geometrycolumns`,

@@ -32,8 +32,9 @@ unit-sphere XYZ bounds and prepared geometries are internal accelerators.
 
 1. Add explicit manifold construction and preservation, XY/XYZ lazy indexing,
    manifold-aware predicates, and finite geodesic interval selection.
-2. Implement spherical nearest-point selection with an exhaustive scan. General
-   spherical point-to-line/polygon distance and tree pruning remain follow-ups.
+2. Implement spherical nearest-point selection with an exhaustive scan, then
+   accelerate it using XYZ chord bounds converted to angular distance. General
+   spherical point-to-line/polygon distance remains a follow-up.
 3. Round-trip edge/orientation semantics through table column metadata. Preserve
    supplied CRS unchanged. Until datum-to-radius resolution is implemented, reject
    table export of a nondefault spherical radius rather than silently losing it.
@@ -57,7 +58,8 @@ existing planar test suite.
 - Resolve sphere parameters from the CRS datum, and preserve custom datums through
   interoperable output. Do not relabel WGS84 coordinates merely to select a
   spherical computational approximation.
-- General spherical distance and a proven XYZ-box lower bound for nearest queries.
+- General spherical distance; point lookup tree pruning is implemented using an
+  XYZ-box chord lower bound and exhaustive-scan equivalence tests.
 - Explicit reprojection and spherical rasterization/zonal semantics.
 - USP input conversion at the public boundary and format-specific metadata bridges.
 
