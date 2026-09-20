@@ -138,6 +138,12 @@ function GeometryLookup(
     _checkmanifold(manifold)
     isnokw(crs) && (crs = _inputcrs(data, geometries, manifold))
     geometries, normalized = _normalizecoordinates(manifold, geometries)
+    if normalized && crs == _unitsphericalcrs()
+        throw(ArgumentError(
+            "UnitSphericalPoint input was converted to longitude/latitude, but its CRS is the " *
+            "internal unit-sphere Cartesian CRS. Pass the geographic CRS explicitly with `crs`."
+        ))
+    end
     infer_manifold && (manifold = _inputmanifold(data, geometrycolumn, crs))
     return GeometryLookup(manifold, geometries, _spatialindex(manifold, tree, geometries), _checked_dims(dims), crs, metadata)
 end
@@ -153,7 +159,7 @@ _geometrycrs(::GO.Planar, geometry) = GI.crs(geometry)
 function _geometrycrs(::GO.Spherical, geometry)
     crs = GI.crs(geometry)
     # USP's Cartesian CRS describes its storage, not the normalized public geometry.
-    return _hasusp(geometry) && crs == GI.crs(GO.UnitSpherical.UnitSphericalPoint((0.0, 0.0))) ? nothing : crs
+    return _hasusp(geometry) && crs == _unitsphericalcrs() ? nothing : crs
 end
 
 _checkmanifold(::GO.Planar) = nothing
@@ -171,6 +177,8 @@ end
 _hasusp(geometry) = GO.applyreduce(|, GI.PointTrait(), geometry; init=false) do point
     point isa GO.UnitSpherical.UnitSphericalPoint
 end
+
+_unitsphericalcrs() = GI.crs(GO.UnitSpherical.UnitSphericalPoint((0.0, 0.0)))
 
 function _normalizespherical(geometry)
     _hasusp(geometry) || return geometry

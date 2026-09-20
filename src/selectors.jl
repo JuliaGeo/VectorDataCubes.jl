@@ -150,10 +150,16 @@ _selects(lookup::GeometryLookup, sel::Lookups.At) =
 _selects(lookup::GeometryLookup, sel::Lookups.Near) =
     _ispoint(val(sel)) && !isempty(parent(lookup)) &&
     (lookup.manifold isa GO.Planar || all(_ispoint, parent(lookup)))
+_selects(lookup::GeometryLookup, sel::Lookups.At{<:GO.UnitSpherical.UnitSphericalPoint}) =
+    !isnothing(_at(lookup, val(sel)))
+_selects(lookup::GeometryLookup, sel::Lookups.Near{<:GO.UnitSpherical.UnitSphericalPoint}) =
+    !isempty(parent(lookup)) && (lookup.manifold isa GO.Planar || all(_ispoint, parent(lookup)))
 _selects(lookup::GeometryLookup, sel::Union{Lookups.At{<:AbstractVector},Lookups.Near{<:AbstractVector}}) =
     all(v -> _selects(lookup, DD.rebuild(sel; val=v)), val(sel))
 _selects(lookup::GeometryLookup, sel::Lookups.Contains) =
     _isgeometry(val(sel)) && !isempty(Lookups.selectindices(lookup, sel))
+_selects(lookup::GeometryLookup, sel::Lookups.Contains{<:GO.UnitSpherical.UnitSphericalPoint}) =
+    !isempty(Lookups.selectindices(lookup, sel))
 _selects(lookup::GeometryLookup, sel::Lookups.Contains{<:AbstractVector}) =
     all(_isgeometry, val(sel)) && !isempty(Lookups.selectindices(lookup, sel))
 _selects(::GeometryLookup, ::Lookups.Touches) = false

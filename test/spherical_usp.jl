@@ -8,9 +8,25 @@ import DE9IM
 import DimensionalData as DD
 import GeoInterface as GI
 import GeometryOps as GO
+import Tables
+import Proj
 
 const USP = GO.UnitSpherical.UnitSphericalPoint
 usp(point) = USP(point)
+
+struct USPTable{G,L,C}
+    geometry::G
+    label::L
+    crs::C
+end
+Tables.istable(::Type{<:USPTable}) = true
+Tables.columnaccess(::Type{<:USPTable}) = true
+Tables.columns(table::USPTable) = table
+Tables.columnnames(::USPTable) = (:geometry, :label)
+Tables.getcolumn(table::USPTable, name::Symbol) = getfield(table, name)
+Tables.getcolumn(table::USPTable, i::Int) = Tables.getcolumn(table, Tables.columnnames(table)[i])
+GI.geometrycolumns(::USPTable) = (:geometry,)
+GI.crs(table::USPTable) = table.crs
 
 @testset "UnitSpherical input is stored as longitude/latitude" begin
     sphere = GO.Spherical()
@@ -29,6 +45,10 @@ usp(point) = USP(point)
     rebuilt = DD.rebuild(lookup; data=reverse(points))
     @test all(p -> !(p isa USP), parent(rebuilt))
     @test all(isapprox.(parent(rebuilt)[1], (-179.0, 5.0)))
+
+    xyz = GI.Point(1.0, 2.0, 3.0)
+    xyz_lookup = GeometryLookup([xyz]; manifold=sphere)
+    @test parent(xyz_lookup)[1] === xyz
 end
 
 @testset "whole geometries and spherical queries normalize USP coordinates" begin
@@ -42,8 +62,15 @@ end
     @test Lookups.selectindices(lookup, Contains(usp((179.0, 0.0)))) == [1]
 
     point_lookup = GeometryLookup(usp.([(179.0, 0.0), (-179.0, 0.0)]); manifold=sphere)
-    @test Lookups.selectindices(point_lookup, At(usp((179.0, 0.0)))) == 1
-    @test Lookups.selectindices(point_lookup, Near(usp((-178.0, 0.0)))) == 2
+    at = At(usp((179.0, 0.0)))
+    near = Near(usp((-178.0, 0.0)))
+    contains = Contains(usp((179.0, 0.0)))
+    @test Lookups.selectindices(point_lookup, at) == 1
+    @test Lookups.selectindices(point_lookup, near) == 2
+    @test Lookups.selectindices(point_lookup, contains) == [1]
+    @test Lookups.hasselection(point_lookup, at)
+    @test Lookups.hasselection(point_lookup, near)
+    @test Lookups.hasselection(point_lookup, contains)
     @test Lookups.selectindices(point_lookup,
         At(usp.([(-179.0, 0.0), (179.0, 0.0)]))) == [2, 1]
     @test Lookups.selectindices(lookup, DE9IM.Covers(usp((179.0, 0.0)))) == [1]
@@ -67,4 +94,15 @@ end
     emitted = vectordatacubetable(cube)
     @test all(p -> !(p isa USP), emitted.Geometry)
     @test GI.crs(emitted) == EPSG(4326)
+
+    cartesian = USPTable(points, ["a", "b"], GI.crs(first(points)))
+    err = try
+        vectordatacube(cartesian; manifold=sphere)
+    catch exception
+        exception
+    end
+    @test err isa ArgumentError
+    @test occursin("geographic CRS", err.msg)
+    corrected = vectordatacube(cartesian; manifold=sphere, crs=EPSG(4326))
+    @test GI.crs(DD.lookup(corrected, Geometry)) == EPSG(4326)
 end
