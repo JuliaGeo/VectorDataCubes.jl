@@ -27,6 +27,8 @@ unit-sphere XYZ bounds and prepared geometries are internal accelerators.
 - Emit longitude/latitude geometry, never internal unit-sphere coordinates under
   a geographic CRS. File writers remain responsible for mapping DataAPI metadata
   into their supported formats; this package does not become a GeoParquet writer.
+- Normalize `UnitSphericalPoint` input and queries back to public longitude/latitude
+  coordinates at the lookup boundary.
 
 ## Small first cut
 
@@ -62,7 +64,7 @@ existing planar test suite.
 - General spherical distance; point lookup tree pruning is implemented using an
   XYZ-box chord lower bound and exhaustive-scan equivalence tests.
 - Explicit reprojection and spherical rasterization/zonal semantics.
-- USP input conversion at the public boundary and format-specific metadata bridges.
+- Format-specific metadata bridges.
 
 Relevant upstream work: [GeoDataFrames #167](https://github.com/evetion/GeoDataFrames.jl/pull/167),
 [GeometryOps #506](https://github.com/JuliaGeo/GeometryOps.jl/pull/506), and

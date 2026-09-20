@@ -35,8 +35,8 @@ far = ring([(20.0, -5.0), (30.0, -5.0), (30.0, 5.0), (20.0, 5.0)])
     @test !isequal(spherical, planar)
     @test hash(spherical) != hash(planar)
     usp = GO.UnitSpherical.UnitSphericalPoint((179.0, 0.0))
-    @test_throws ArgumentError GeometryLookup([usp]; manifold=sphere)
-    @test_throws ArgumentError DD.rebuild(spherical; data=[usp])
+    @test all(isapprox.(parent(GeometryLookup([usp]; manifold=sphere))[1], (179.0, 0.0)))
+    @test all(isapprox.(parent(DD.rebuild(spherical; data=[usp]))[1], (179.0, 0.0)))
 
     # The public bounds remain longitude/latitude bounds even though the spherical tree is XYZ.
     bounds_before = Lookups.bounds(spherical)

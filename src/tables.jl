@@ -206,22 +206,13 @@ function vectordatacube(table; geometrycolumn=nothing, layers=nothing, crs=nokw,
         Filter those rows out first, e.g. with `Tables.subset` or `filter`.
         """))
     end
-    if isnokw(crs)
-        table_crs = GI.crs(table)
-        if !isnothing(table_crs)
-            crs = table_crs
-        elseif !isempty(geometries)
-            geometry_crs = GI.crs(first(geometries))
-            isnothing(geometry_crs) || (crs = geometry_crs)
-        end
-    end
-    resolved_crs = isnokw(crs) ? nothing : crs
-    if isnokw(manifold)
-        manifold = _inputmanifold(table, geomcol, resolved_crs)
-    else
-        _validate_manifold_crs(manifold, resolved_crs)
-    end
+    infer_manifold = isnokw(manifold)
+    infer_manifold && (manifold = _inputmanifold(table, geomcol))
+    _checkmanifold(manifold)
+    isnokw(crs) && (crs = _inputcrs(table, geometries, manifold))
+    infer_manifold && (manifold = _inputmanifold(table, geomcol, crs))
     gl = GeometryLookup(geometries; crs, manifold)
+    _validate_manifold_crs(manifold, crs)
     layernames = _layernames(layers, colnames, geomcol)
     gdim = Geometry(gl)
     return DD.DimStack(NamedTuple{layernames}(map(layernames) do name

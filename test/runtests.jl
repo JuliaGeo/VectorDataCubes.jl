@@ -8,6 +8,7 @@ using SafeTestsets
 @safetestset "spherical datum" begin include("spherical_datum.jl") end
 @safetestset "spherical" begin include("spherical.jl") end
 @safetestset "spherical nearest points" begin include("spherical_nearest.jl") end
+@safetestset "spherical USP" begin include("spherical_usp.jl") end
 @safetestset "zonal" begin include("zonal.jl") end
 @safetestset "extract" begin include("extract.jl") end
 @safetestset "tables" begin include("tables.jl") end

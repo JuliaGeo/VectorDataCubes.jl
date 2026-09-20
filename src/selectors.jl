@@ -68,14 +68,21 @@ function Lookups.selectindices(lookup::GeometryLookup, sel::Lookups.Contains{<:A
         Lookups.selectindices(lookup, DD.rebuild(sel; val=v))
     end
 end
+Lookups.selectindices(lookup::GeometryLookup,
+    sel::Lookups.Contains{<:GO.UnitSpherical.UnitSphericalPoint}) =
+    _select_predicate(lookup, GO.covers, _checked_geometry(sel))
 
-function Lookups.selectindices(lookup::GeometryLookup, sel::Lookups.At)
+Lookups.selectindices(lookup::GeometryLookup, sel::Lookups.At) = _select_at(lookup, sel)
+Lookups.selectindices(lookup::GeometryLookup,
+    sel::Lookups.At{<:GO.UnitSpherical.UnitSphericalPoint}) = _select_at(lookup, sel)
+function _select_at(lookup, sel)
     geom = _checked_geometry(sel)
     i = _at(lookup, geom)
     isnothing(i) && throw(ArgumentError("No geometry in the lookup equals `$(sel)`."))
     return i
 end
 function _at(lookup::GeometryLookup, geom)
+    geom = _querygeometry(lookup.manifold, geom)
     candidates = _maybe_get_candidates(lookup, geom)
     geoms = parent(lookup)
     k = findfirst(i -> GO.equals(geoms[i], geom), candidates)
@@ -83,6 +90,9 @@ function _at(lookup::GeometryLookup, geom)
 end
 
 Lookups.selectindices(lookup::GeometryLookup, sel::Lookups.Near) = _nearest(lookup, _checked_point(sel))
+Lookups.selectindices(lookup::GeometryLookup,
+    sel::Lookups.Near{<:GO.UnitSpherical.UnitSphericalPoint}) =
+    _nearest(lookup, _checked_point(sel))
 # Same body as DimensionalData's `selectindices(::Lookup, ::Selector{<:AbstractVector})`, but
 # needed: the `At`/`Near` methods above and that generic one are ambiguous for a vector value.
 Lookups.selectindices(lookup::GeometryLookup, sel::Union{Lookups.At{<:AbstractVector},Lookups.Near{<:AbstractVector}}) =
@@ -108,7 +118,7 @@ end
 function Lookups.selectindices(lookup::GeometryLookup, sel::DE9IM.DE9IMPredicate)
     geom = _checked_geometry(sel)
     pred = _predicate(sel)
-    geom isa AbstractVector || return _select_predicate(lookup, pred, geom)
+    _isgeometry(geom) && return _select_predicate(lookup, pred, geom)
     return _union(g -> _select_predicate(lookup, pred, g), lookup, geom)
 end
 _predicate(::DE9IM.Intersects) = GO.intersects
@@ -184,9 +194,8 @@ _predicate(m::GO.Spherical, pred::Union{typeof(GO.crosses),typeof(GO.overlaps)},
     pred(GO.RelateNG(m), a, b)
 
 _querygeometry(m, geom) = geom
-function _querygeometry(m::GO.Spherical, geom)
-    _checkcoordinates(m, geom)
-    return geom
+function _querygeometry(::GO.Spherical, geom)
+    return _normalizespherical(geom)
 end
 function _querygeometry(::GO.Spherical, box::Extents.Extent)
     xmin, xmax = box.X
@@ -261,7 +270,7 @@ end
 function _wrapsgeometry(sel::DE9IM.DE9IMPredicate)
     isempty(DE9IM.keywords(sel)) || return false
     geom = parent(sel)
-    return geom isa AbstractVector ? all(_isgeometry, geom) : _isgeometry(geom)
+    return _isgeometry(geom) || (geom isa AbstractVector && all(_isgeometry, geom))
 end
 
 # Nearest geometry to a point: branch and bound over the tree, visiting children by
@@ -269,6 +278,7 @@ end
 # Nodes at exactly that distance are still visited: ties go to the lowest index, like the scan.
 
 function _nearest(lookup::GeometryLookup, point)
+    point = _querygeometry(lookup.manifold, point)
     geoms = parent(lookup)
     isempty(geoms) && throw(ArgumentError("`Near` on an empty `GeometryLookup` has no nearest geometry."))
     # A non-finite coordinate prunes every node of the tree and leaves no nearest index.
@@ -278,7 +288,7 @@ function _nearest(lookup::GeometryLookup, point)
         all(_ispoint, geoms) || throw(ArgumentError(
             "Spherical Near currently supports point lookups only; GeometryOps needs general spherical distance first."
         ))
-        point = _unitpoint(_querygeometry(lookup.manifold, point))
+        point = _unitpoint(point)
     end
     tree = spatialtree(lookup)
     isnothing(tree) && return last(findmin(g -> _nearest_distance(point, g), geoms))
