@@ -59,6 +59,27 @@ from GeoJSON and Shapefile tables. Supply `crs` when the input does not carry it
 coordinate reference system. Spatial queries use the geometries' coordinates;
 transform query geometries to the same CRS before selecting.
 
+## Spherical geometries
+
+Select longitude/latitude geometries with great-circle edges explicitly:
+
+```julia
+import GeometryOps as GO
+regions = GeometryLookup(geometries; manifold=GO.Spherical())
+attributes = vectordatacube((geometry=geometries, value=[10, 20]); manifold=GO.Spherical())
+```
+
+The lazy index uses unit-sphere XYZ bounds while stored and emitted geometries
+remain longitude/latitude. Finite `X`/`Y` interval boxes become polygons with
+great-circle edges. This first cut accepts longitude widths below 180 degrees
+and latitude bounds strictly between the poles; pass a geometry for other regions.
+Spherical `Near` supports point lookups. Spherical zonal statistics, reprojection,
+and automatic CRS/datum resolution remain follow-ups.
+
+Table conversion preserves `GEOINTERFACE:crs` and `GEOINTERFACE:geometrycolumns`,
+plus per-column DataAPI `edges` and `orientation` metadata using GeoParquet
+semantics. Absent `edges` means planar. See the [spherical implementation plan](docs/src/spherical-plan.md).
+
 ## Tables and attributes
 
 `vectordatacube` turns each attribute column into a layer over a shared geometry

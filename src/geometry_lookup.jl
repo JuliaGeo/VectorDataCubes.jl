@@ -15,15 +15,24 @@ A dimension meant to be used with a [`GeometryLookup`](@ref).
 """
 DD.@dim Geometry "Geometry"
 
-# The tree indexes each geometry's `X`/`Y` extent as `Float64`, so its type is known
-# from the geometry vector type alone, whatever the geometries' coordinate type or
-# dimensionality.
+# Fixed extent types keep lazy lookups concrete even when empty or sliced.
 const XYExtent = Extents.Extent{(:X, :Y),Tuple{Tuple{Float64,Float64},Tuple{Float64,Float64}}}
-const XYRTree{A,D} = RTree{A,XYExtent,D,Vector{Int}}
+const XYZExtent = Extents.Extent{(:X, :Y, :Z),NTuple{3,Tuple{Float64,Float64}}}
+_extenttype(::GO.Planar) = XYExtent
+_extenttype(::GO.Spherical) = XYZExtent
 
 function _xyextent(geometry)
     ext = GI.extent(geometry)
     return Extents.Extent(X=Float64.(ext.X), Y=Float64.(ext.Y))
+end
+
+_indexextent(::GO.Planar, geometry) = _xyextent(geometry)
+function _indexextent(m::GO.Spherical, geometry)
+    # GO 0.1.47's spherical extent conversion does not promote Float32 input.
+    geom = GO.apply(GI.PointTrait(), geometry) do p
+        (Float64(GI.x(p)), Float64(GI.y(p)))
+    end
+    return GO.extent(m, geom)
 end
 
 # The lazily built spatial accelerator of a `GeometryLookup`. `spatialtree` builds and caches
@@ -34,19 +43,24 @@ mutable struct SpatialIndex{A<:BulkLoadAlgorithm,Tr<:RTree}
     @atomic tree::Union{Nothing,Tr}
     const lock::ReentrantLock
 end
-SpatialIndex(algorithm::BulkLoadAlgorithm, ::Type{D}) where {D<:AbstractVector} =
-    SpatialIndex{typeof(algorithm),XYRTree{typeof(algorithm),D}}(algorithm, nothing, ReentrantLock())
+function SpatialIndex(m, algorithm::BulkLoadAlgorithm, ::Type{D}) where {D<:AbstractVector}
+    # RTree's type parameter layout can change independently of its constructor API.
+    Tr = Base.promote_op(_buildtree, typeof(m), typeof(algorithm), D)
+    return SpatialIndex{typeof(algorithm),Tr}(algorithm, nothing, ReentrantLock())
+end
 SpatialIndex(tree::RTree) = SpatialIndex{typeof(tree.algorithm),typeof(tree)}(tree.algorithm, tree, ReentrantLock())
 
 # `indices` as a `Vector` fixes the leaf index type for every algorithm (`Unsorted` would
 # otherwise keep a `Base.OneTo`); the typed comprehension fixes the extent type for every
 # geometry vector, where `map` would follow its eltype and its array type.
-_buildtree(algorithm::BulkLoadAlgorithm, geometries::AbstractVector) =
-    RTree(algorithm, geometries;
-        indices=collect(eachindex(geometries)), extents=XYExtent[_xyextent(g) for g in geometries])
+function _buildtree(m, algorithm::BulkLoadAlgorithm, geometries::AbstractVector)
+    E = _extenttype(m)
+    return RTree(algorithm, geometries;
+        indices=collect(eachindex(geometries)), extents=E[_indexextent(m, g) for g in geometries])
+end
 
 """
-    GeometryLookup(data, dims = (X(), Y()); geometrycolumn, crs, tree, metadata)
+    GeometryLookup(data, dims = (X(), Y()); geometrycolumn, crs, manifold, tree, metadata)
 
 A DimensionalData `Lookup` over geometries, with spatial indexing.
 
@@ -70,11 +84,20 @@ and `cube[X(a..b), Y(c..d)]` work.
 - `geometrycolumn`: the geometry column to read when `data` is a table.
 - `crs`: the coordinate reference system. Defaults to `GeoInterface.crs` of
   `data`, then of its first geometry, then `nothing`.
+- `manifold`: `GeometryOps.Planar()` or `GeometryOps.Spherical()`. Defaults to
+  the selected table column's `edges`/`orientation` metadata, otherwise planar.
+  Spherical geometries use longitude/latitude in degrees and great-circle edges.
+  Convert `UnitSphericalPoint` input to longitude/latitude before construction.
+  Finite interval boxes become great-circle polygons; `Near` currently supports
+  spherical point lookups only. `Spherical(oriented=true)` asserts that ring
+  interiors lie to the left of the stored vertex order. The CRS is preserved
+  independently; CRS inference and datum-to-radius resolution are future work.
 - `tree`: the spatial accelerator, a `GeometryOps.FlexibleRTrees.RTree`. One of
   - not given: a sort-tile-recursive tree, built lazily on the first spatial query;
   - `nothing`: no accelerator, every query scans all geometries;
   - a bulk-load algorithm (`STR()`, `HPR()`, `Unsorted()`): built lazily with it;
-  - a prebuilt `RTree` over the lookup's own geometry vector: stored as is.
+  - a prebuilt `RTree` over the lookup's own geometry vector: stored as is for
+    planar lookups. Spherical lookups currently require an algorithm or `nothing`.
 - `metadata`: dimension metadata, `DimensionalData.NoMetadata()` by default.
 
 # Examples
@@ -106,7 +129,7 @@ struct GeometryLookup{T,A<:AbstractVector{T},D,M<:GO.Manifold,Tree<:Union{Nothin
 end
 function GeometryLookup(
         data, dims=(DD.X(), DD.Y());
-        geometrycolumn=nothing, crs=nokw, tree=nokw, metadata=Lookups.NoMetadata()
+        geometrycolumn=nothing, crs=nokw, manifold=nokw, tree=nokw, metadata=Lookups.NoMetadata()
     )
     geometries = _checked_geometries(GOCore.get_geometries(data; geometrycolumn))
     if isnokw(crs)
@@ -115,7 +138,27 @@ function GeometryLookup(
             crs = GI.crs(first(geometries))
         end
     end
-    return GeometryLookup(GO.Planar(), geometries, _spatialindex(tree, geometries), _checked_dims(dims), crs, metadata)
+    isnokw(manifold) && (manifold = _inputmanifold(data, geometrycolumn))
+    _checkmanifold(manifold)
+    _checkcoordinates(manifold, geometries)
+    return GeometryLookup(manifold, geometries, _spatialindex(manifold, tree, geometries), _checked_dims(dims), crs, metadata)
+end
+
+_checkmanifold(::GO.Planar) = nothing
+function _checkmanifold(m::GO.Spherical)
+    isfinite(m.radius) && m.radius > 0 || throw(ArgumentError("A spherical radius must be finite and positive."))
+end
+_checkmanifold(m) = throw(ArgumentError("GeometryLookup supports Planar() or Spherical(); got $m."))
+
+_checkcoordinates(::GO.Planar, geometries) = nothing
+function _checkcoordinates(::GO.Spherical, geometries)
+    hasusp = GO.applyreduce(|, GI.PointTrait(), geometries; init=false) do p
+        p isa GO.UnitSpherical.UnitSphericalPoint
+    end
+    hasusp && throw(ArgumentError(
+        "Spherical lookups accept longitude/latitude coordinates; convert UnitSphericalPoint geometries to longitude/latitude first."
+    ))
+    return nothing
 end
 
 function _checked_geometries(geometries)
@@ -154,15 +197,19 @@ function _checked_dims(dims)
     return based
 end
 
-_spatialindex(tree, geometries) = isnokw(tree) ? SpatialIndex(STR(), typeof(geometries)) : _spatialindex_error(tree)
-_spatialindex(::Nothing, geometries) = nothing
-_spatialindex(algorithm::BulkLoadAlgorithm, geometries) = SpatialIndex(algorithm, typeof(geometries))
-function _spatialindex(tree::RTree, geometries)
+_spatialindex(m, tree, geometries) = isnokw(tree) ? SpatialIndex(m, STR(), typeof(geometries)) : _spatialindex_error(tree)
+_spatialindex(m, ::Nothing, geometries) = nothing
+_spatialindex(m, algorithm::BulkLoadAlgorithm, geometries) = SpatialIndex(m, algorithm, typeof(geometries))
+function _spatialindex(m, tree::RTree, geometries)
     tree.data === geometries || throw(ArgumentError("""
         A prebuilt `tree` must index the lookup's own geometry vector — for a table, its
         geometry column — but `tree.data` is a different object. Build the tree over that
         vector, or pass a bulk-load algorithm (`STR()`, `HPR()`, `Unsorted()`) instead.
-        """))
+    """))
+    # Released RTree has no manifold field to validate, including ring orientation.
+    m isa GO.Planar || throw(ArgumentError(
+        "Prebuilt trees are supported for planar lookups only; pass a bulk-load algorithm for a spherical lookup."
+    ))
     return SpatialIndex(tree)
 end
 @noinline _spatialindex_error(tree) = throw(ArgumentError("""
@@ -171,8 +218,8 @@ end
     `Unsorted()`), or a prebuilt `GeometryOps.FlexibleRTrees.RTree`; got a `$(typeof(tree))`.
     """))
 
-_fresh(::Nothing, geometries) = nothing
-_fresh(index::SpatialIndex, geometries) = SpatialIndex(index.algorithm, typeof(geometries))
+_fresh(m, ::Nothing, geometries) = nothing
+_fresh(m, index::SpatialIndex, geometries) = SpatialIndex(m, index.algorithm, typeof(geometries))
 
 """
     spatialtree(l::GeometryLookup)
@@ -183,16 +230,16 @@ constructed with `tree = nothing` or is empty.
 The tree is built on the first call and cached in the lookup; slicing,
 `view`, `reverse` and `rebuild` with new geometries never build one.
 """
-spatialtree(l::GeometryLookup) = _spatialtree(l.tree, parent(l))
-_spatialtree(::Nothing, geometries) = nothing
-function _spatialtree(index::SpatialIndex, geometries)
+spatialtree(l::GeometryLookup) = _spatialtree(l.manifold, l.tree, parent(l))
+_spatialtree(m, ::Nothing, geometries) = nothing
+function _spatialtree(m, index::SpatialIndex, geometries)
     isempty(geometries) && return nothing
     tree = _builttree(index)
     isnothing(tree) || return tree
     return lock(index.lock) do
         built = _builttree(index)
         isnothing(built) || return built
-        new_tree = _buildtree(index.algorithm, geometries)
+        new_tree = _buildtree(m, index.algorithm, geometries)
         @atomic :release index.tree = new_tree
         return new_tree
     end
@@ -204,12 +251,16 @@ _builttree(::Nothing) = nothing
 _builttree(index::SpatialIndex) = @atomic :acquire index.tree
 
 GI.crs(l::GeometryLookup) = l.crs
+GOCore.manifold(l::GeometryLookup) = l.manifold
 # Rasters reaches a lookup through `setcrs(dim::Dimension, crs)`, which passes the
 # dimension it came from as a keyword.
 RA.setcrs(l::GeometryLookup, crs; dim=nothing) = DD.rebuild(l; crs)
 
 # Needs Proj.jl loaded, like `GeometryOps.reproject` itself.
 function RA.reproject(target::RA.GeoFormat, l::GeometryLookup)
+    l.manifold isa GO.Planar || throw(ArgumentError(
+        "Reprojecting a spherical GeometryLookup requires an explicit edge-conversion policy and is not supported yet."
+    ))
     isnothing(GI.crs(l)) && throw(ArgumentError(
         "Cannot reproject a `GeometryLookup` with no crs. Set one first with `Rasters.setcrs`."
     ))
@@ -232,10 +283,12 @@ function DD.rebuild(
         l::GeometryLookup;
         data=l.data, tree=nokw, dims=l.dims, crs=nokw, manifold=l.manifold, metadata=l.metadata
     )
+    _checkmanifold(manifold)
+    (data === l.data && manifold == l.manifold) || _checkcoordinates(manifold, data)
     index = if isnokw(tree)
-        data === l.data ? l.tree : _fresh(l.tree, data)
+        data === l.data && manifold == l.manifold ? l.tree : _fresh(manifold, l.tree, data)
     else
-        _spatialindex(tree, data)
+        _spatialindex(manifold, tree, data)
     end
     new_crs = if isnokw(crs)
         data_crs = GI.crs(data)
@@ -268,23 +321,23 @@ function _extent(l::GeometryLookup)
     geometries = parent(l)
     isempty(geometries) && return nothing
     tree = _builttree(l)
-    isnothing(tree) || return Extents.extent(tree)
+    l.manifold isa GO.Planar && !isnothing(tree) && return Extents.extent(tree)
     # `_xyextent`, like the tree's own extent, so bounds do not change once it is built.
     return mapreduce(_xyextent, Extents.union, geometries)
 end
 
 function Base.:(==)(a::GeometryLookup, b::GeometryLookup)
     a === b && return true
-    return DD.name(DD.dims(a)) == DD.name(DD.dims(b)) && GI.crs(a) == GI.crs(b) &&
+    return a.manifold == b.manifold && DD.name(DD.dims(a)) == DD.name(DD.dims(b)) && GI.crs(a) == GI.crs(b) &&
         (parent(a) === parent(b) || parent(a) == parent(b))
 end
 function Base.isequal(a::GeometryLookup, b::GeometryLookup)
     a === b && return true
-    return isequal(DD.name(DD.dims(a)), DD.name(DD.dims(b))) && isequal(GI.crs(a), GI.crs(b)) &&
+    return isequal(a.manifold, b.manifold) && isequal(DD.name(DD.dims(a)), DD.name(DD.dims(b))) && isequal(GI.crs(a), GI.crs(b)) &&
         (parent(a) === parent(b) || isequal(parent(a), parent(b)))
 end
 Base.hash(l::GeometryLookup, h::UInt) =
-    hash(parent(l), hash(GI.crs(l), hash(DD.name(DD.dims(l)), hash(:GeometryLookup, h))))
+    hash(parent(l), hash(GI.crs(l), hash(DD.name(DD.dims(l)), hash(l.manifold, hash(:GeometryLookup, h)))))
 
 @inline Lookups.reducelookup(::GeometryLookup) = Lookups.NoLookup(Base.OneTo(1))
 
@@ -298,4 +351,5 @@ _elname(T::Type) = nameof(T)
 function Lookups.show_properties(io::IO, mime, l::GeometryLookup)
     print(io, " ")
     show(IOContext(io, :inset => "", :dimcolor => 244), mime, DD.basedims(l))
+    l.manifold isa GO.Spherical && print(io, " ", l.manifold)
 end

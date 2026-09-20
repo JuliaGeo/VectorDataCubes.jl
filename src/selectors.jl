@@ -76,7 +76,7 @@ function Lookups.selectindices(lookup::GeometryLookup, sel::Lookups.At)
     return i
 end
 function _at(lookup::GeometryLookup, geom)
-    candidates = _maybe_get_candidates(lookup, GI.extent(geom))
+    candidates = _maybe_get_candidates(lookup, geom)
     geoms = parent(lookup)
     k = findfirst(i -> GO.equals(geoms[i], geom), candidates)
     return isnothing(k) ? nothing : candidates[k]
@@ -138,7 +138,8 @@ Lookups.hasselection(dim::DD.Dimension{<:GeometryLookup}, sel::DE9IM.DE9IMPredic
 _selects(lookup::GeometryLookup, sel::Lookups.At) =
     _isgeometry(val(sel)) && !isnothing(_at(lookup, val(sel)))
 _selects(lookup::GeometryLookup, sel::Lookups.Near) =
-    _ispoint(val(sel)) && !isempty(parent(lookup))
+    _ispoint(val(sel)) && !isempty(parent(lookup)) &&
+    (lookup.manifold isa GO.Planar || all(_ispoint, parent(lookup)))
 _selects(lookup::GeometryLookup, sel::Union{Lookups.At{<:AbstractVector},Lookups.Near{<:AbstractVector}}) =
     all(v -> _selects(lookup, DD.rebuild(sel; val=v)), val(sel))
 _selects(lookup::GeometryLookup, sel::Lookups.Contains) =
@@ -159,27 +160,53 @@ _selects(lookup::GeometryLookup, sel::DE9IM.DE9IMPredicate) =
 # for every candidate `A`.
 
 function _select_predicate(lookup::GeometryLookup, pred, geom)
-    candidates = _maybe_get_candidates(lookup, GI.extent(geom))
+    geom = _querygeometry(lookup.manifold, geom)
+    candidates = _maybe_get_candidates(lookup, geom)
     geoms = parent(lookup)
-    return filter(i -> pred(geoms[i], geom), candidates)
+    return filter(i -> _predicate(lookup.manifold, pred, geoms[i], geom), candidates)
 end
 # Everything outside the candidate set is disjoint, so mark the intersecting candidates
 # and keep the rest.
 function _select_predicate(lookup::GeometryLookup, ::typeof(GO.disjoint), geom)
+    geom = _querygeometry(lookup.manifold, geom)
     keep = trues(length(lookup))
     geoms = parent(lookup)
-    for i in _maybe_get_candidates(lookup, GI.extent(geom))
-        keep[i] = !GO.intersects(geoms[i], geom)
+    for i in _maybe_get_candidates(lookup, geom)
+        keep[i] = !_predicate(lookup.manifold, GO.intersects, geoms[i], geom)
     end
     return findall(keep)
+end
+
+_predicate(::GO.Planar, pred, a, b) = pred(a, b)
+_predicate(m::GO.Spherical, pred, a, b) = pred(m, a, b)
+_predicate(::GO.Spherical, ::typeof(GO.equals), a, b) = GO.equals(a, b)
+_predicate(m::GO.Spherical, pred::Union{typeof(GO.crosses),typeof(GO.overlaps)}, a, b) =
+    pred(GO.RelateNG(m), a, b)
+
+_querygeometry(m, geom) = geom
+function _querygeometry(m::GO.Spherical, geom)
+    _checkcoordinates(m, geom)
+    return geom
+end
+function _querygeometry(::GO.Spherical, box::Extents.Extent)
+    xmin, xmax = box.X
+    ymin, ymax = box.Y
+    all(isfinite, (xmin, xmax, ymin, ymax)) && 0 < xmax - xmin < 180 &&
+        -90 < ymin < ymax < 90 || throw(ArgumentError(
+            "Spherical interval boxes need finite X/Y bounds, longitude width between 0 and 180 degrees, " *
+            "and latitude bounds strictly between -90 and 90 degrees. Pass a geometry for other regions."
+        ))
+    return GI.Polygon([[(xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax), (xmin, ymin)]])
 end
 
 # Only extent relations that hold for a node whenever they hold for one of its children can
 # narrow a tree query, which is why the narrowing is always `query`'s extent intersection:
 # every predicate here needs at least one shared point. Candidates come back sorted.
-function _maybe_get_candidates(lookup::GeometryLookup, selector_extent)
+function _maybe_get_candidates(lookup::GeometryLookup, geom)
     tree = spatialtree(lookup)
-    (isnothing(tree) || isnothing(selector_extent)) && return 1:length(lookup)
+    isnothing(tree) && return 1:length(lookup)
+    selector_extent = _indexextent(lookup.manifold, geom)
+    isnothing(selector_extent) && return 1:length(lookup)
     Extents.disjoint(Extents.extent(tree), selector_extent) && return Int[]
     return GO.FlexibleRTrees.query(tree, selector_extent)
 end
@@ -195,10 +222,9 @@ _mark!(selected::AbstractVector{Bool}, i::Int) = (selected[i] = true; selected)
 _mark!(selected::AbstractVector{Bool}, is) = (selected[is] .= true; selected)
 
 function _first_covering(lookup::GeometryLookup, point)
-    x, y = point
-    candidates = _maybe_get_candidates(lookup, Extents.Extent(X=(x, x), Y=(y, y)))
+    candidates = _maybe_get_candidates(lookup, point)
     geoms = parent(lookup)
-    k = findfirst(i -> GO.covers(geoms[i], point), candidates)
+    k = findfirst(i -> _predicate(lookup.manifold, GO.covers, geoms[i], point), candidates)
     return isnothing(k) ? nothing : candidates[k]
 end
 
@@ -248,6 +274,12 @@ function _nearest(lookup::GeometryLookup, point)
     # A non-finite coordinate prunes every node of the tree and leaves no nearest index.
     (isfinite(GI.x(point)) && isfinite(GI.y(point))) ||
         throw(ArgumentError("`Near` needs a point with finite coordinates; got `$point`."))
+    if lookup.manifold isa GO.Spherical
+        all(_ispoint, geoms) || throw(ArgumentError(
+            "Spherical Near currently supports point lookups only; GeometryOps needs general spherical distance first."
+        ))
+        return last(findmin(g -> GO.distance(lookup.manifold, point, g), geoms))
+    end
     tree = spatialtree(lookup)
     isnothing(tree) && return last(findmin(g -> GO.distance(point, g), geoms))
     return first(_nearest(tree, point, geoms, 0, Inf))::Int

@@ -3,7 +3,7 @@
 # `(X, Y, Ti)` raster is a `MethodError` in Rasters 0.15). Cells come from Rasters' selectors.
 
 """
-    VectorDataCubes.extract(x, points; geometrycolumn = nothing, crs = nokw, skipmissing = false, atol = nothing)
+    VectorDataCubes.extract(x, points; geometrycolumn = nothing, crs = nokw, manifold = nokw, skipmissing = false, atol = nothing)
 
 Point sampling as a vector data cube: the value of the cell of `x` containing each point, as a
 `Raster` (or a `RasterStack`, one layer per layer of `x`) over the non-spatial dimensions of
@@ -28,6 +28,9 @@ the points, an `(X, Y, Ti)` one a `(Ti, Geometry)` cube.
   the table declares.
 - `crs`: the CRS of the points. When not given, it is taken from the lookup, the table
   or the geometries, in that order.
+- `manifold`: overrides the output geometry lookup's manifold. Defaults to the
+  input lookup or table column metadata, otherwise planar. Sampling still uses
+  the raster's coordinate axes.
 - `skipmissing`: `true` drops points outside `x` or in an all-missing cell (any layer, for a
   stack) from the result and its lookup; `false` (the default) keeps them as `missing`.
 - `atol`: the tolerance for matching a point to a cell centre on `Points` lookups; `Intervals`
@@ -41,16 +44,17 @@ Unexported, since Rasters exports an `extract` too: call it qualified, or bind
 it with `using VectorDataCubes: extract`.
 """
 extract(x::Union{RA.AbstractRaster,RA.AbstractRasterStack}, points;
-    geometrycolumn=nothing, crs=nokw, skipmissing=false, atol=nothing
-) = _extract(x, _pointdim(points, geometrycolumn, crs); skipmissing, atol)
+    geometrycolumn=nothing, crs=nokw, manifold=nokw, skipmissing=false, atol=nothing
+) = _extract(x, _pointdim(points, geometrycolumn, crs, manifold); skipmissing, atol)
 
-function _pointdim(points::DD.Dimension{<:GeometryLookup}, geometrycolumn, crs)
+function _pointdim(points::DD.Dimension{<:GeometryLookup}, geometrycolumn, crs, manifold)
     geomdim = isnokw(crs) ? points : DD.rebuild(points, RA.setcrs(val(points), crs))
+    isnokw(manifold) || (geomdim = DD.rebuild(geomdim, DD.rebuild(val(geomdim); manifold)))
     return _checkpoints(geomdim)
 end
-_pointdim(lookup::GeometryLookup, geometrycolumn, crs) = _pointdim(Geometry(lookup), geometrycolumn, crs)
-_pointdim(points, geometrycolumn, crs) =
-    _checkpoints(Geometry(GeometryLookup(points; geometrycolumn, crs)))
+_pointdim(lookup::GeometryLookup, geometrycolumn, crs, manifold) = _pointdim(Geometry(lookup), geometrycolumn, crs, manifold)
+_pointdim(points, geometrycolumn, crs, manifold) =
+    _checkpoints(Geometry(GeometryLookup(points; geometrycolumn, crs, manifold)))
 
 function _checkpoints(geomdim)
     geoms = parent(val(geomdim))
