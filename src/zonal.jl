@@ -38,6 +38,7 @@ a `RasterStack`, one layer per layer of `x`) over that lookup, ready for spatial
 A geometry entirely outside `x` gives `missing` (a `missing`-filled slice when slicing). The
 result keeps the name and metadata of `x`. A CRS mismatch between `x` and the lookup (same
 CRS kind, different value) only warns; nothing is reprojected.
+Spherical lookups are currently unsupported because raster burning uses planar edges.
 
 Unexported, since Rasters exports a `zonal` too: call it qualified, or bind it
 with `using VectorDataCubes: zonal`.
@@ -55,6 +56,9 @@ function _zonal(f, x::Union{RA.AbstractRaster,RA.AbstractRasterStack},
     geomdim::DD.Dimension{<:GeometryLookup}; kw...
 )
     lookup = val(geomdim)
+    lookup.manifold isa GO.Planar || throw(ArgumentError(
+        "Spherical zonal statistics require spherical rasterization, which is not supported yet."
+    ))
     isempty(parent(lookup)) &&
         throw(ArgumentError("Cannot compute zonal statistics with an empty `GeometryLookup`."))
     _warn_crs_mismatch(x, lookup)

@@ -13,12 +13,15 @@ The table [`vectordatacubetable`](@ref) returns: a column table wrapping a vecto
 that `GeoInterface.crs`, `DataFrame`, `GeoDataFrames.write` and other metadata readers see.
 
 The metadata keys are GeoInterface's `"GEOINTERFACE:geometrycolumns"` and `"GEOINTERFACE:crs"`.
+Geometry columns also carry DataAPI `"edges"` and, when asserted, `"orientation"`
+metadata with GeoParquet semantics. These are column metadata, not new GeoInterface keys.
 `parent(tbl)` is the wrapped `DimTable`; the Tables.jl columns interface forwards to it.
 """
-struct VectorDataCubeTable{T<:DD.DimTable,C} <: Tables.AbstractColumns
+struct VectorDataCubeTable{T<:DD.DimTable,C,M} <: Tables.AbstractColumns
     table::T
     geometrycolumns::Tuple{Vararg{Symbol}}
     crs::C
+    columnmetadata::M
 end
 
 Base.parent(t::VectorDataCubeTable) = getfield(t, :table)
@@ -74,8 +77,49 @@ function DataAPI.metadata(t::VectorDataCubeTable, key::AbstractString, default; 
     return DataAPI.metadata(t, key; style)
 end
 
+DataAPI.colmetadatasupport(::Type{<:VectorDataCubeTable}) = (read=true, write=false)
+DataAPI.colmetadatakeys(t::VectorDataCubeTable) =
+    Dict(col => DataAPI.colmetadatakeys(t, col) for col in GI.geometrycolumns(t))
+DataAPI.colmetadatakeys(t::VectorDataCubeTable, col) = String.(keys(_columnmetadata(t, col)))
+function _columnmetadata(t::VectorDataCubeTable, col)
+    name = col isa Integer ? Tables.columnnames(t)[col] : Symbol(col)
+    name in Tables.columnnames(t) || throw(ArgumentError("Table has no column $col."))
+    return get(getfield(t, :columnmetadata), name, (;))
+end
+function DataAPI.colmetadata(t::VectorDataCubeTable, col, key::AbstractString; style::Bool=false)
+    md = _columnmetadata(t, col)
+    haskey(md, Symbol(key)) || throw(ArgumentError("Column $col has no metadata key $(repr(key))."))
+    value = md[Symbol(key)]
+    return style ? (value, :note) : value
+end
+function DataAPI.colmetadata(t::VectorDataCubeTable, col, key::AbstractString, default; style::Bool=false)
+    key in DataAPI.colmetadatakeys(t, col) || return style ? (default, :default) : default
+    return DataAPI.colmetadata(t, col, key; style)
+end
+
+_inputmanifold(l::GeometryLookup, geometrycolumn) = l.manifold
+function _inputmanifold(table, geometrycolumn)
+    DataAPI.colmetadatasupport(typeof(table)).read || return GO.Planar()
+    col = isnothing(geometrycolumn) ? _geometrycolumn(table) : Symbol(geometrycolumn)
+    edges = DataAPI.colmetadata(table, col, "edges", "planar")
+    orientation = DataAPI.colmetadata(table, col, "orientation", nothing)
+    edges in ("planar", "spherical") || throw(ArgumentError("Unsupported edges metadata $(repr(edges)) on column $col."))
+    orientation in (nothing, "counterclockwise") || throw(ArgumentError(
+        "Unsupported orientation metadata $(repr(orientation)) on column $col."
+    ))
+    return edges == "spherical" ? GO.Spherical(; oriented=orientation == "counterclockwise") : GO.Planar()
+end
+
+_geometrymetadata(::GO.Planar) = (; edges="planar")
+function _geometrymetadata(m::GO.Spherical)
+    m.radius == GO.Spherical().radius || throw(ArgumentError(
+        "Exporting a custom spherical radius requires CRS datum-to-radius support, which is not implemented yet."
+    ))
+    return m.oriented ? (; edges="spherical", orientation="counterclockwise") : (; edges="spherical")
+end
+
 """
-    vectordatacube(table; geometrycolumn=nothing, layers=nothing, crs=nokw)
+    vectordatacube(table; geometrycolumn=nothing, layers=nothing, crs=nokw, manifold=nokw)
 
 Convert a table with a geometry column (a GeoJSON `FeatureCollection`, a `Shapefile.Table`,
 a `DataFrame`, ...) to a vector data cube: a `DimStack` over a `Geometry` dimension carrying
@@ -95,12 +139,15 @@ geometries — there is no separate attribute table to keep in sync.
   any iterable of them. Defaults to every column except the geometry column.
 - `crs`: the coordinate reference system of the geometries. Defaults to the
   crs of the table or its geometries, if they carry one.
+- `manifold`: an explicit `GeometryOps.Planar()` or `GeometryOps.Spherical()`.
+  Defaults to the selected column's DataAPI `"edges"` and `"orientation"` metadata;
+  absent `"edges"` means planar, following GeoParquet.
 
 A `missing` geometry is an `ArgumentError` naming the offending rows.
 
 For a cube whose only dimension is `Geometry`, [`vectordatacubetable`](@ref)
 is the inverse: `vectordatacube(vectordatacubetable(cube))` recovers the
-layers and the crs.
+layers, crs, and edge/orientation semantics.
 
 # Example
 
@@ -112,7 +159,7 @@ countries = vectordatacube(naturalearth("admin_0_countries", 110))
 countries[Geometry(Contains((9.0, 50.0)))][:NAME]
 ```
 """
-function vectordatacube(table; geometrycolumn=nothing, layers=nothing, crs=nokw)
+function vectordatacube(table; geometrycolumn=nothing, layers=nothing, crs=nokw, manifold=nokw)
     Tables.istable(table) || throw(ArgumentError("""
     `vectordatacube` requires a Tables.jl-compatible table with a geometry column,
     but `Tables.istable` is false for the input ($(typeof(table))).
@@ -138,7 +185,8 @@ function vectordatacube(table; geometrycolumn=nothing, layers=nothing, crs=nokw)
         table_crs = GI.crs(table)
         isnothing(table_crs) || (crs = table_crs)
     end
-    gl = GeometryLookup(geometries; crs)
+    isnokw(manifold) && (manifold = _inputmanifold(table, geomcol))
+    gl = GeometryLookup(geometries; crs, manifold)
     layernames = _layernames(layers, colnames, geomcol)
     gdim = Geometry(gl)
     return DD.DimStack(NamedTuple{layernames}(map(layernames) do name
@@ -201,6 +249,13 @@ table with one row per combination of dimension coordinates, and these columns:
 The geometry column names and the crs travel as DataAPI table metadata, which
 `GeoInterface.geometrycolumns`, `GeoInterface.crs`, `DataFrame` and `GeoDataFrames.write` read.
 Geometry lookups carrying a crs must agree on it; disagreement is an `ArgumentError`.
+
+Each geometry column carries DataAPI `"edges"` (`"planar"` or `"spherical"`) metadata.
+`Spherical(oriented=true)` also emits `"orientation" => "counterclockwise"`, asserting
+the supplied ring convention; other lookups omit it. Coordinates remain unchanged.
+File writers must explicitly translate these keys to their own format metadata.
+Export of a custom spherical radius is unsupported until CRS datum-to-radius
+resolution is implemented; its physical parameters belong in the CRS.
 """
 function vectordatacubetable(cube::Union{DD.AbstractDimArray,DD.AbstractDimStack})
     geomdims = filter(d -> DD.lookup(d) isa GeometryLookup, (DD.dims(cube)..., DD.refdims(cube)...))
@@ -209,7 +264,9 @@ function vectordatacubetable(cube::Union{DD.AbstractDimArray,DD.AbstractDimStack
     `GeometryLookup`, but the input has dimensions $(DD.basedims(cube)).
     Wrap your geometries in a `Geometry(GeometryLookup(geoms))` axis first.
     """))
-    return VectorDataCubeTable(DD.DimTable(cube), map(DD.name, geomdims), _shared_crs(geomdims))
+    cols = map(DD.name, geomdims)
+    columnmetadata = NamedTuple{cols}(map(d -> _geometrymetadata(DD.lookup(d).manifold), geomdims))
+    return VectorDataCubeTable(DD.DimTable(cube), cols, _shared_crs(geomdims), columnmetadata)
 end
 
 function _shared_crs(geomdims)

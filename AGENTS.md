@@ -17,7 +17,8 @@ Five `src/` files, one concern each:
 - `zonal.jl` — `VectorDataCubes.zonal`, aggregating a raster over geometries into a cube.
 - `extract.jl` — `VectorDataCubes.extract`, sampling a raster at points into a cube.
 - `tables.jl` — `vectordatacube` / `vectordatacubetable`, round-tripping a table ↔ cube;
-  `VectorDataCubeTable` (the returned table) carries geometry columns and crs as DataAPI metadata.
+  `VectorDataCubeTable` (the returned table) carries geometry columns and crs as DataAPI
+  table metadata, plus per-column `edges`/`orientation` with GeoParquet semantics.
 
 Plus one package extension, `ext/VectorDataCubesMakieExt.jl` (loaded with Makie), which
 makes a `GeometryLookup`, and any dimension wrapping one, plottable by converting its
@@ -70,13 +71,19 @@ avoids re-paying Julia's per-process compile latency on every run.
   them into a `Bool` mask.
 - **The lookup spans `(X(), Y())` *and* the `Geometry` dim wrapping it** — that's why both
   `Geometry(...)` and `X()/Y()` selectors work on one axis.
+- **The manifold governs indexing and predicates.** Planar is the default; spherical
+  lookups accept longitude/latitude geometries, use RelateNG for crosses/overlaps, and
+  interpret finite interval boxes as great-circle polygons. Spherical `Near` currently
+  scans point lookups only. Spherical zonal statistics and reprojection are unsupported.
+  CRS remains independent; datum-to-radius resolution is future work.
 - **The tree is lazy.** `spatialtree(lookup)` builds it on the first spatial query and
   caches it; slicing, `view`, `reverse` and `DD.rebuild` with new data hand back an
   unbuilt index, so the array type never depends on the number of geometries. Nothing
-  outside `geometry_lookup.jl` touches `lookup.tree` or `lookup.data`. It always indexes
-  `Float64` `X`/`Y` extents (`_xyextent`) with a `Vector{Int}` of leaf indices, so its
-  type — `XYRTree{algorithm, geometryvector}` — follows from the lookup's own type,
-  whatever the geometries' coordinate type or dimensionality.
+  outside `geometry_lookup.jl` touches `lookup.tree` or `lookup.data`. It indexes
+  `Float64` XY (planar) or unit-sphere XYZ (spherical) extents with a `Vector{Int}`
+  of leaf indices. Its concrete type follows from the lookup's manifold, algorithm,
+  and geometry vector type. Changing manifold also invalidates the index; public
+  dimension bounds always remain in the input coordinates.
 - **`zonal` and `extract` are package-owned, not methods of the Rasters ones** (Rasters
   can't dispatch on `zonal`'s `of`, and its `extract` returns rows), and not exported
   (call them qualified). A `GeometryLookup` `of` yields a cube; anything else forwards to

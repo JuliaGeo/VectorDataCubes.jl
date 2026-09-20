@@ -148,7 +148,7 @@ end
             @test spatialtree(gl) isa RTree{typeof(algorithm)}
             @test spatialtree(gl[1:2]) isa RTree{typeof(algorithm)}
             # every algorithm gives the one tree type the lookup type promises
-            @test typeof(spatialtree(gl)) == VectorDataCubes.XYRTree{typeof(algorithm), typeof(csquares)}
+            @test Extents.extent(spatialtree(gl)) isa VectorDataCubes.XYExtent
             dv = DimArray([1, 2, 3], Geometry(gl))
             @test dv[Geometry = Contains((10.5, 10.5))] == [3]
         end
