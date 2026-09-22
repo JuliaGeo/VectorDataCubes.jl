@@ -91,7 +91,8 @@ and `cube[X(a..b), Y(c..d)]` work.
   Finite interval boxes become great-circle polygons; `Near` currently supports
   spherical point lookups only. `Spherical(oriented=true)` asserts that ring
   interiors lie to the left of the stored vertex order. The CRS is preserved
-  independently; CRS inference and datum-to-radius resolution are future work.
+  independently. With Proj loaded, spherical table input derives and validates the
+  physical radius from the CRS datum.
 - `tree`: the spatial accelerator, a `GeometryOps.FlexibleRTrees.RTree`. One of
   - not given: a sort-tile-recursive tree, built lazily on the first spatial query;
   - `nothing`: no accelerator, every query scans all geometries;
@@ -138,7 +139,9 @@ function GeometryLookup(
             crs = GI.crs(first(geometries))
         end
     end
-    isnokw(manifold) && (manifold = _inputmanifold(data, geometrycolumn))
+    isnokw(manifold) && (manifold = _inputmanifold(
+        data, geometrycolumn, isnokw(crs) ? nothing : crs
+    ))
     _checkmanifold(manifold)
     _checkcoordinates(manifold, geometries)
     return GeometryLookup(manifold, geometries, _spatialindex(manifold, tree, geometries), _checked_dims(dims), crs, metadata)
@@ -254,7 +257,10 @@ GI.crs(l::GeometryLookup) = l.crs
 GOCore.manifold(l::GeometryLookup) = l.manifold
 # Rasters reaches a lookup through `setcrs(dim::Dimension, crs)`, which passes the
 # dimension it came from as a keyword.
-RA.setcrs(l::GeometryLookup, crs; dim=nothing) = DD.rebuild(l; crs)
+function RA.setcrs(l::GeometryLookup, crs; dim=nothing)
+    _validate_manifold_crs(l.manifold, crs)
+    return DD.rebuild(l; crs)
+end
 
 # Needs Proj.jl loaded, like `GeometryOps.reproject` itself.
 function RA.reproject(target::RA.GeoFormat, l::GeometryLookup)

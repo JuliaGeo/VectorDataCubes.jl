@@ -36,13 +36,17 @@ unit-sphere XYZ bounds and prepared geometries are internal accelerators.
    accelerate it using XYZ chord bounds converted to angular distance. General
    spherical point-to-line/polygon distance remains a follow-up.
 3. Round-trip edge/orientation semantics through table column metadata. Preserve
-   supplied CRS unchanged. Until datum-to-radius resolution is implemented, reject
-   table export of a nondefault spherical radius rather than silently losing it.
+   the supplied CRS unchanged. With Proj loaded, a spherical CRS keeps its declared
+   radius exactly; an ellipsoidal datum uses the arithmetic mean radius `(2a+b)/3`.
+   A custom radius must agree with the CRS, and without a CRS only the GeometryOps
+   default radius can round-trip.
 4. Preserve the manifold through point extraction. Reject spherical zonal burning
    and reprojection until their space-conversion semantics are implemented.
 
-The implementation should use released GeometryOps APIs and explicit manifold
-bounds, without depending on an unmerged tree-query API or adding CRS inference.
+The implementation uses released GeometryOps APIs and explicit manifold bounds,
+without depending on an unmerged tree-query API. Proj is an optional extension:
+GeoParquet `edges` still chooses the manifold independently, while the CRS supplies
+and validates its physical radius.
 
 ## Verification
 
@@ -55,9 +59,6 @@ existing planar test suite.
 
 ## Follow-ups
 
-- Resolve sphere parameters from the CRS datum, and preserve custom datums through
-  interoperable output. Do not relabel WGS84 coordinates merely to select a
-  spherical computational approximation.
 - General spherical distance; point lookup tree pruning is implemented using an
   XYZ-box chord lower bound and exhaustive-scan equivalence tests.
 - Explicit reprojection and spherical rasterization/zonal semantics.
