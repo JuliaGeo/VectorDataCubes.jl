@@ -3,13 +3,16 @@ module VectorDataCubesProjExt
 using VectorDataCubes
 import Proj
 
-function _crsdatum(crs)
+function VectorDataCubes._crsdatum(crs::Union{
+        Proj.CRS,AbstractString,Proj.GFT.CoordinateReferenceSystemFormat,Proj.GFT.MixedFormat})
     projcrs = try
         convert(Proj.CRS, crs)
     catch err
         throw(ArgumentError("Proj could not parse the CRS $(repr(crs)): $(sprint(showerror, err))"))
     end
-    Proj.is_projected(projcrs) && return (; kind=:projected, radius=nothing, sphere=false)
+    Proj.is_projected(projcrs) && throw(ArgumentError(
+        "Spherical edges require a geographic CRS, but $(repr(crs)) is projected."
+    ))
     Proj.is_geographic(projcrs) || throw(ArgumentError(
         "Spherical edges require a geographic CRS; $(repr(crs)) is neither geographic nor projected."
     ))
@@ -38,12 +41,7 @@ function _crsdatum(crs)
     # IUGG arithmetic mean radius, (2a + b) / 3.
     sphere = major == minor
     radius = sphere ? major : (2major + minor) / 3
-    return (; kind=:geographic, radius, sphere)
+    return (; radius, sphere)
 end
-
-VectorDataCubes._crsdatum(crs::Proj.CRS) = _crsdatum(crs)
-VectorDataCubes._crsdatum(crs::AbstractString) = _crsdatum(crs)
-VectorDataCubes._crsdatum(crs::Proj.GFT.CoordinateReferenceSystemFormat) = _crsdatum(crs)
-VectorDataCubes._crsdatum(crs::Proj.GFT.MixedFormat) = _crsdatum(crs)
 
 end

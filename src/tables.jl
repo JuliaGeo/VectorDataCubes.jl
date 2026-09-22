@@ -108,52 +108,27 @@ function _inputmanifold(table, geometrycolumn, crs=nothing)
         "Unsupported orientation metadata $(repr(orientation)) on column $col."
     ))
     edges == "planar" && return GO.Planar()
-    radius = isnothing(crs) ? GO.Spherical().radius : _spherical_radius(crs)
+    radius = isnothing(crs) ? GO.Spherical().radius : _crsdatum(crs).radius
     return GO.Spherical(; radius, oriented=orientation == "counterclockwise")
 end
 
-_crsdatum(crs) = nothing
+_crsdatum(crs) = throw(ArgumentError(
+    "Resolving the datum of CRS $(repr(crs)) requires Proj.jl. Load Proj before " *
+    "importing, exporting, or assigning a CRS to spherical geometries."
+))
 
-function _resolved_crsdatum(crs)
-    info = _crsdatum(crs)
-    isnothing(info) && throw(ArgumentError(
-        "Resolving the datum of CRS $(repr(crs)) requires Proj.jl. Load Proj before " *
-        "importing, exporting, or assigning a CRS to spherical geometries."
-    ))
-    return info
-end
-
-function _spherical_radius(crs)
-    info = _resolved_crsdatum(crs)
-    info.kind == :geographic || throw(ArgumentError(
-        "Spherical edges require a geographic CRS, but $(repr(crs)) is projected."
-    ))
-    return info.radius
-end
-
-function _radius_matches(m::GO.Spherical, info)
-    # True-sphere radii are authoritative and must survive exactly apart from conversion
-    # roundoff. Ellipsoids use (2a+b)/3; 5 cm also accepts GeometryOps' conventional
-    # WGS84 value 6371008.8 against the unrounded mean 6371008.771... metres.
-    atol = info.sphere ? 8eps(max(abs(m.radius), abs(info.radius))) : 0.05
-    return isapprox(m.radius, info.radius; rtol=0, atol)
-end
-
-function _validate_spherical_crs(m::GO.Spherical, crs)
+_validate_manifold_crs(::GO.Planar, crs) = nothing
+function _validate_manifold_crs(m::GO.Spherical, crs)
     isnothing(crs) && return nothing
-    info = _resolved_crsdatum(crs)
-    info.kind == :geographic || throw(ArgumentError(
-        "Spherical edges require a geographic CRS, but $(repr(crs)) is projected."
-    ))
-    _radius_matches(m, info) || throw(ArgumentError(
-        "The spherical radius $(m.radius) disagrees with the radius $(info.radius) " *
+    (; radius, sphere) = _crsdatum(crs)
+    # Ellipsoids allow the 5 cm rounding in GeometryOps' default WGS84 mean radius.
+    atol = sphere ? 8eps(max(abs(m.radius), abs(radius))) : 0.05
+    isapprox(m.radius, radius; rtol=0, atol) || throw(ArgumentError(
+        "The spherical radius $(m.radius) disagrees with the radius $radius " *
         "derived from CRS $(repr(crs)). Use a CRS whose datum describes this sphere."
     ))
     return nothing
 end
-
-_validate_manifold_crs(::GO.Planar, crs) = nothing
-_validate_manifold_crs(m::GO.Spherical, crs) = _validate_spherical_crs(m, crs)
 
 _geometrymetadata(::GO.Planar, crs) = (; edges="planar")
 function _geometrymetadata(m::GO.Spherical, crs)
@@ -163,7 +138,7 @@ function _geometrymetadata(m::GO.Spherical, crs)
             "Supply a geographic CRS whose datum describes the sphere."
         ))
     else
-        _validate_spherical_crs(m, crs)
+        _validate_manifold_crs(m, crs)
     end
     return m.oriented ? (; edges="spherical", orientation="counterclockwise") : (; edges="spherical")
 end
