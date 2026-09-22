@@ -212,7 +212,7 @@ function vectordatacube(table; geometrycolumn=nothing, layers=nothing, crs=nokw,
     isnokw(crs) && (crs = _inputcrs(table, geometries, manifold))
     infer_manifold && (manifold = _inputmanifold(table, geomcol, crs))
     gl = GeometryLookup(geometries; crs, manifold)
-    _validate_manifold_crs(manifold, crs)
+    infer_manifold || _validate_manifold_crs(manifold, crs)
     layernames = _layernames(layers, colnames, geomcol)
     gdim = Geometry(gl)
     return DD.DimStack(NamedTuple{layernames}(map(layernames) do name
