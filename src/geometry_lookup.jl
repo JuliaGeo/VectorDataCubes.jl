@@ -87,7 +87,7 @@ and `cube[X(a..b), Y(c..d)]` work.
 - `manifold`: `GeometryOps.Planar()` or `GeometryOps.Spherical()`. Defaults to
   the selected table column's `edges`/`orientation` metadata, otherwise planar.
   Spherical geometries use longitude/latitude in degrees and great-circle edges.
-  Convert `UnitSphericalPoint` input to longitude/latitude before construction.
+  `UnitSphericalPoint` coordinates are converted to longitude/latitude at construction.
   Finite interval boxes become great-circle polygons; `Near` currently supports
   spherical point lookups only. `Spherical(oriented=true)` asserts that ring
   interiors lie to the left of the stored vertex order. The CRS is preserved
@@ -132,19 +132,37 @@ function GeometryLookup(
         data, dims=(DD.X(), DD.Y());
         geometrycolumn=nothing, crs=nokw, manifold=nokw, tree=nokw, metadata=Lookups.NoMetadata()
     )
-    geometries = _checked_geometries(GOCore.get_geometries(data; geometrycolumn))
-    if isnokw(crs)
-        crs = GI.crs(data)
-        if isnothing(crs) && !isempty(geometries)
-            crs = GI.crs(first(geometries))
-        end
-    end
-    isnokw(manifold) && (manifold = _inputmanifold(
-        data, geometrycolumn, isnokw(crs) ? nothing : crs
-    ))
+    # USP is also an AbstractVector; get_geometries otherwise returns its XYZ components.
+    geometries = data isa GO.UnitSpherical.UnitSphericalPoint ? [data] :
+        GOCore.get_geometries(data; geometrycolumn)
+    geometries = _checked_geometries(geometries)
+    infer_manifold = isnokw(manifold)
+    infer_manifold && (manifold = _inputmanifold(data, geometrycolumn))
     _checkmanifold(manifold)
-    _checkcoordinates(manifold, geometries)
+    isnokw(crs) && (crs = _inputcrs(data, geometries, manifold))
+    geometries, normalized = _normalizecoordinates(manifold, geometries)
+    if normalized && crs == _unitsphericalcrs()
+        throw(ArgumentError(
+            "UnitSphericalPoint input was converted to longitude/latitude, but its CRS is the " *
+            "internal unit-sphere Cartesian CRS. Pass the geographic CRS explicitly with `crs`."
+        ))
+    end
+    infer_manifold && (manifold = _inputmanifold(data, geometrycolumn, crs))
     return GeometryLookup(manifold, geometries, _spatialindex(manifold, tree, geometries), _checked_dims(dims), crs, metadata)
+end
+
+function _inputcrs(data, geometries, manifold)
+    crs = GI.isgeometry(data) ? _geometrycrs(manifold, data) : GI.crs(data)
+    if isnothing(crs) && !isempty(geometries)
+        crs = _geometrycrs(manifold, first(geometries))
+    end
+    return crs
+end
+_geometrycrs(::GO.Planar, geometry) = GI.crs(geometry)
+function _geometrycrs(::GO.Spherical, geometry)
+    crs = GI.crs(geometry)
+    # USP's Cartesian CRS describes its storage, not the normalized public geometry.
+    return _hasusp(geometry) && crs == _unitsphericalcrs() ? nothing : crs
 end
 
 _checkmanifold(::GO.Planar) = nothing
@@ -153,15 +171,24 @@ function _checkmanifold(m::GO.Spherical)
 end
 _checkmanifold(m) = throw(ArgumentError("GeometryLookup supports Planar() or Spherical(); got $m."))
 
-_checkcoordinates(::GO.Planar, geometries) = nothing
-function _checkcoordinates(::GO.Spherical, geometries)
-    hasusp = GO.applyreduce(|, GI.PointTrait(), geometries; init=false) do p
-        p isa GO.UnitSpherical.UnitSphericalPoint
+_normalizecoordinates(::GO.Planar, geometries) = (geometries, false)
+function _normalizecoordinates(::GO.Spherical, geometries)
+    any(_hasusp, geometries) || return (geometries, false)
+    return map(_normalizespherical, geometries), true
+end
+
+_hasusp(geometry) = GO.applyreduce(|, GI.PointTrait(), geometry; init=false) do point
+    point isa GO.UnitSpherical.UnitSphericalPoint
+end
+
+_unitsphericalcrs() = GI.crs(GO.UnitSpherical.UnitSphericalPoint((0.0, 0.0)))
+
+function _normalizespherical(geometry)
+    _hasusp(geometry) || return geometry
+    inverse = GO.UnitSpherical.GeographicFromUnitSphere()
+    return GO.apply(GI.PointTrait(), geometry; crs=nothing) do point
+        point isa GO.UnitSpherical.UnitSphericalPoint ? inverse(point) : point
     end
-    hasusp && throw(ArgumentError(
-        "Spherical lookups accept longitude/latitude coordinates; convert UnitSphericalPoint geometries to longitude/latitude first."
-    ))
-    return nothing
 end
 
 function _checked_geometries(geometries)
@@ -290,7 +317,9 @@ function DD.rebuild(
         data=l.data, tree=nokw, dims=l.dims, crs=nokw, manifold=l.manifold, metadata=l.metadata
     )
     _checkmanifold(manifold)
-    (data === l.data && manifold == l.manifold) || _checkcoordinates(manifold, data)
+    if data !== l.data || manifold != l.manifold
+        data = first(_normalizecoordinates(manifold, _checked_geometries(data)))
+    end
     index = if isnokw(tree)
         data === l.data && manifold == l.manifold ? l.tree : _fresh(manifold, l.tree, data)
     else
